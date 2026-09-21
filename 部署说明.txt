@@ -1,0 +1,61 @@
+AI工具合集 - 服务器部署说明（统一工程）
+============================================
+
+【架构】
+  单一 FastAPI 服务（:8080），同时提供：
+    - 后端接口 /api/**（达梦、SQL Server、看板、人员能力表、CMA 核对）
+    - 前端页面（Vue3 构建产物，含导航首页与 5 个工具页）
+  数据库连接由后端直连，不再需要「中间池」与各工具的独立 Node 服务。
+
+【部署前提】
+  1. 服务器需安装 Python 3.11+（本项目使用 conda 环境 aitools）
+  2. 需安装 Node.js（仅在需要重新构建前端时使用；已随包提供 dist 则可不装）
+  3. 服务器需能访问以下数据库：
+       达梦 DM      192.168.0.32:5236   (库: DETECTION, 账号 CHXJ)
+       SQL Server   192.168.0.30:1433   (库: Elims,     账号 Elims)
+     地址变更时只需改 backend\.env
+  4. 一单一库核对（CMA）需能访问外网 cma.caqit.org.cn
+
+【目录结构】
+  AI工具合集\
+    ├─ backend\          <- FastAPI 后端（app\、requirements.txt、.env）
+    │    └─ data\cma_ledger\ledger.sqlite   <- 一单一库核对台账（留痕，请纳入备份与归档）
+    ├─ frontend\         <- Vue3 前端源码 + 构建产物 dist\
+    ├─ _logs\            <- 运行日志（8080.log / 8080.out.log）
+    ├─ _legacy_backup\   <- 旧版多服务实现备份（不再使用，可删）
+    ├─ 一键启动.bat / 停止服务.bat
+    └─ 使用说明.txt / 部署说明.txt
+
+【首次部署】
+  1. 创建 Python 环境并安装依赖：
+       conda create -n aitools python=3.11 -y
+       conda activate aitools
+       pip install -r backend\requirements.txt
+  2. 配置数据库连接：编辑 backend\.env
+  3. 构建前端（若无 dist 目录）：
+       cd frontend && npm install && npm run build
+  4. 启动：双击「一键启动.bat」（会自动检查/构建前端并启动 8080）
+
+【启动 / 停止 / 端口】
+  启动：双击 一键启动.bat      -> 服务在后台运行，不弹黑框
+  停止：双击 停止服务.bat
+  端口：仅 8080（页面与接口同端口）。若需改端口，编辑 一键启动.bat 中的 --port 参数。
+
+【常见问题】
+  - 未找到 Python 环境：确认 %USERPROFILE%\miniconda3\envs\aitools\python.exe 存在，或改 一键启动.bat 中的 PY 变量
+  - 数据库连不上：检查 backend\.env 配置，及服务器到 192.168.0.32 / 192.168.0.30 的网络连通性
+  - 页面 404 或空白：确认 frontend\dist 已构建；查看 _logs\8080.log
+  - CMA 核对超时/失败：确认服务器可访问外网 cma.caqit.org.cn
+  - 台账（留痕）相关：
+      开关/目录在 backend\.env 的 CMA_LEDGER_ENABLED / CMA_LEDGER_DIR（目录留空=backend\data\cma_ledger）
+      台账文件是 SQLite 单文件 ledger.sqlite，**请纳入日常备份**（这是体系运行的原始记录）
+      页面提示"台账写入异常"：检查台账目录是否存在且可写（服务账号需有写权限）
+      台账只增不删，没有删除入口；如确需清理整库，请先备份再手动处理文件
+  - 逐条处理意见相关：
+      风险项（版本不符·待确认 / 不在清单内 / 有备注）必须逐条填写处理意见，否则**不允许导出台账**
+      处理意见只存内容（不记填写人与时间），可反复修改；该字段是"填写"性质，不影响核对记录只增不删
+      若用户反馈"导出按钮点了没反应/提示还有 n 条"：属于正常的强制闭环拦截，按提示填完即可
+  - 数据库结构升级：
+      台账库会自动补列（need_disposition / disposition / need_cnt / pending_cnt），
+      老库无需手工处理；升级后会自动按结论+备注回填"需处理/待处理"计数
+      如遇 no such column 报错：确认 backend 代码已更新并已重启服务

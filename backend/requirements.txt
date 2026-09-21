@@ -1,0 +1,18 @@
+# 统一工程后端依赖（conda 环境：aitools / Python 3.11）
+fastapi==0.141.1
+uvicorn[standard]==0.53.0
+httpx==0.28.1
+pydantic==2.13.5
+pydantic-settings==2.15.0
+
+# 数据库驱动（W-3 验证结论：达梦用 dmPython，SQL Server 用 pyodbc + 本机 {SQL Server} ODBC 驱动）
+# 注意：pymssql 已实测不可用（FreeTDS 与该 SQL Server 2008 R2 的 TDS 握手失败），不要引入
+dmPython==2.5.38
+pyodbc==5.3.0
+
+# 中文排序（还原旧实现 localeCompare(x, 'zh-CN') 的拼音序）
+pypinyin==0.55.0
+
+# 测试
+pytest==9.1.1
+anyio==4.15.1

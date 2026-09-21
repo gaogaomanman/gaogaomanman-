@@ -1,0 +1,29 @@
+# ===== 依赖 =====
+node_modules/
+frontend/node_modules/
+
+# ===== 前端构建产物（可随时 npm run build 重新生成） =====
+frontend/dist/
+frontend/dist_dev/
+*.timestamp-*.mjs
+
+# ===== 日志 =====
+_logs/
+*.log
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# ===== 环境配置（含数据库账号密码，严禁提交） =====
+backend/.env
+.env.local
+
+# ===== 运行时临时文件 =====
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+.DS_Store
+Thumbs.db

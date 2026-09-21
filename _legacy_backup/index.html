@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI工具合集 · 导航首页</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Microsoft YaHei", "PingFang SC", sans-serif;
+    background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+    min-height: 100vh;
+    color: #e2e8f0;
+    padding: 40px 20px 60px;
+  }
+  .container { max-width: 1080px; margin: 0 auto; }
+
+  /* 头部 */
+  header { text-align: center; margin-bottom: 40px; }
+  header h1 {
+    font-size: 34px; font-weight: 700;
+    background: linear-gradient(90deg, #38bdf8, #818cf8, #c084fc);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    letter-spacing: 2px;
+  }
+  header p { color: #94a3b8; margin-top: 10px; font-size: 15px; }
+
+  /* 中间池状态 */
+  .pool-status {
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 16px;
+    padding: 20px 24px;
+    display: flex; align-items: center; justify-content: space-between;
+    flex-wrap: wrap; gap: 12px;
+    margin-bottom: 32px;
+    backdrop-filter: blur(8px);
+  }
+  .pool-status .info { display: flex; align-items: center; gap: 12px; }
+  .dot {
+    width: 12px; height: 12px; border-radius: 50%;
+    background: #f59e0b; box-shadow: 0 0 10px currentColor;
+    flex-shrink: 0;
+  }
+  .dot.on { background: #22c55e; color: #22c55e; }
+  .dot.off { background: #ef4444; color: #ef4444; }
+  .pool-status .label { font-weight: 600; font-size: 15px; }
+  .pool-status .meta { color: #94a3b8; font-size: 13px; margin-top: 3px; }
+  .pool-status .actions { display: flex; gap: 10px; }
+  .pool-status .addr {
+    font-family: Consolas, monospace; background: rgba(0,0,0,0.3);
+    padding: 6px 12px; border-radius: 8px; font-size: 13px; color: #7dd3fc;
+  }
+
+  /* 工具网格 */
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 18px; }
+  .card {
+    position: relative;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 16px;
+    padding: 22px;
+    transition: transform .2s, border-color .2s, box-shadow .2s;
+    cursor: pointer;
+    overflow: hidden;
+  }
+  .card:hover {
+    transform: translateY(-4px);
+    border-color: #38bdf8;
+    box-shadow: 0 12px 30px rgba(56,189,248,0.15);
+  }
+  .card .icon {
+    width: 46px; height: 46px; border-radius: 12px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px; margin-bottom: 14px;
+  }
+  .card .title { font-size: 17px; font-weight: 600; margin-bottom: 6px; }
+  .card .desc { font-size: 13px; color: #94a3b8; line-height: 1.6; margin-bottom: 14px; }
+  .card .port {
+    display: inline-block; font-family: Consolas, monospace;
+    font-size: 12px; color: #7dd3fc; background: rgba(56,189,248,0.12);
+    padding: 3px 10px; border-radius: 20px;
+  }
+  .card .status-line { position: absolute; top: 22px; right: 22px; display: flex; align-items: center; gap: 6px; font-size: 12px; }
+  .card .st-dot { width: 8px; height: 8px; border-radius: 50%; background: #475569; }
+  .card .st-dot.on { background: #22c55e; }
+  .card .st-dot.off { background: #ef4444; }
+  .card .st-text { color: #64748b; }
+  .card .st-text.on { color: #22c55e; }
+  .card .st-text.off { color: #ef4444; }
+
+  /* 颜色 */
+  .c-dm { background: linear-gradient(135deg,#3b82f6,#2563eb); }
+  .c-sql { background: linear-gradient(135deg,#0ea5e9,#0284c7); }
+  .c-board { background: linear-gradient(135deg,#8b5cf6,#6d28d9); }
+  .c-people { background: linear-gradient(135deg,#ec4899,#db2777); }
+  .c-cma { background: linear-gradient(135deg,#f59e0b,#d97706); }
+
+  footer { text-align: center; color: #64748b; font-size: 12px; margin-top: 40px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>🛠 AI 工具合集</h1>
+    <p>统一中间池 · 数据库工具导航</p>
+  </header>
+
+  <!-- 中间池状态 -->
+  <div class="pool-status">
+    <div class="info">
+      <div class="dot" id="poolDot"></div>
+      <div>
+        <div class="label">数据库连接中间池</div>
+        <div class="meta" id="poolMeta">检测中…</div>
+      </div>
+    </div>
+    <div class="actions">
+      <span class="addr" id="poolAddr"></span>
+    </div>
+  </div>
+
+  <!-- 工具卡片 -->
+  <div class="grid">
+    <div class="card" onclick="openTool(3001,'sql-query.html')" data-port="3001">
+      <div class="status-line"><span class="st-dot" id="st3001"></span><span class="st-text" id="stT3001">检测中</span></div>
+      <div class="icon c-dm">🗄</div>
+      <div class="title">LIMS统计查询</div>
+      <div class="desc">连接达梦 DETECTION 库，支持模板化 SQL 查询、表结构浏览</div>
+      <span class="port">:3001</span>
+    </div>
+
+    <div class="card" onclick="openTool(3003,'sql-query.html')" data-port="3003">
+      <div class="status-line"><span class="st-dot" id="st3003"></span><span class="st-text" id="stT3003">检测中</span></div>
+      <div class="icon c-sql">💾</div>
+      <div class="title">旧LIMS查询</div>
+      <div class="desc">连接 SQL Server Elims 库，数据库/表/字段浏览与数据预览</div>
+      <span class="port">:3003</span>
+    </div>
+
+    <div class="card" onclick="openTool(3005,'')" data-port="3005">
+      <div class="status-line"><span class="st-dot" id="st3005"></span><span class="st-text" id="stT3005">检测中</span></div>
+      <div class="icon c-board">📊</div>
+      <div class="title">数据看板</div>
+      <div class="desc">检测中心数据看板（仪器 / 样品 / 检测项次 / 检出率 / 风险等可视化）</div>
+      <span class="port">:3005</span>
+    </div>
+
+    <div class="card" onclick="openTool(3007,'index.html')" data-port="3007">
+      <div class="status-line"><span class="st-dot" id="st3007"></span><span class="st-text" id="stT3007">检测中</span></div>
+      <div class="icon c-people">👤</div>
+      <div class="title">人员能力表梳理</div>
+      <div class="desc">跨达梦 + SQLServer 双库，按人员/项目/标准交叉查询</div>
+      <span class="port">:3007</span>
+    </div>
+
+    <div class="card" onclick="openTool(3002,'cma-check.html')" data-port="3002">
+      <div class="status-line"><span class="st-dot" id="st3002"></span><span class="st-text" id="stT3002">检测中</span></div>
+      <div class="icon c-cma">🔍</div>
+      <div class="title">一单一库核对（CMA）</div>
+      <div class="desc">检测标准资质核对，批量核对外部 CMA 标准库（独立工具）</div>
+      <span class="port">:3002</span>
+    </div>
+  </div>
+
+  <footer>AI工具合集 · 统一中间池架构 · 2026-08-24</footer>
+</div>
+
+<script>
+  const POOL_PORT = 4000;
+  // 用当前访问页面的主机名（本机为 localhost，局域网访问为服务器IP，如 192.168.0.88）
+  const HOST = window.location.hostname;
+
+  // 探测中间池健康
+  async function probePool() {
+    const dot = document.getElementById('poolDot');
+    const meta = document.getElementById('poolMeta');
+    const addr = document.getElementById('poolAddr');
+    if (addr) addr.textContent = `http://${HOST}:${POOL_PORT}`;
+    try {
+      const r = await fetch(`http://${HOST}:${POOL_PORT}/api/health`, { method: 'GET' });
+      const j = await r.json();
+      if (j.ok) {
+        dot.className = 'dot on';
+        meta.textContent = '已连接 · 运行正常';
+      } else {
+        dot.className = 'dot off';
+        meta.textContent = '中间池未就绪';
+      }
+    } catch (e) {
+      dot.className = 'dot off';
+      meta.textContent = '中间池离线';
+    }
+  }
+
+  // 各工具的首页文件，用于探测是否在线
+  const TOOL_PAGES = { 3001: 'sql-query.html', 3003: 'sql-query.html', 3005: '', 3007: 'index.html', 3002: 'cma-check.html' };
+
+  // 探测单个工具是否启动（探测首页 html）。独立工具(3002)不连中间池，文案用"独立工具/未启动"
+  async function probeTool(port, dotId, txtId) {
+    const dot = document.getElementById(dotId);
+    const txt = document.getElementById(txtId);
+    const isStandalone = (port === 3002);
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 3000);
+      const r = await fetch(`http://${HOST}:${port}/${TOOL_PAGES[port] || ''}`, { method: 'GET', signal: ctrl.signal });
+      clearTimeout(timer);
+      if (r.ok) {
+        dot.className = 'st-dot on';
+        txt.className = 'st-text on';
+        txt.textContent = isStandalone ? '独立工具' : '在线';
+      } else {
+        dot.className = 'st-dot off';
+        txt.className = 'st-text off';
+        txt.textContent = isStandalone ? '未启动' : '异常';
+      }
+    } catch (e) {
+      dot.className = 'st-dot off';
+      txt.className = 'st-text off';
+      txt.textContent = isStandalone ? '未启动' : '离线';
+    }
+  }
+
+  // 打开工具
+  function openTool(port, page) {
+    window.open(`http://${HOST}:${port}/${page}`, '_blank');
+  }
+
+  // 定时刷新状态
+  probePool();
+  probeTool(3001, 'st3001', 'stT3001');
+  probeTool(3003, 'st3003', 'stT3003');
+  probeTool(3005, 'st3005', 'stT3005');
+  probeTool(3007, 'st3007', 'stT3007');
+  probeTool(3002, 'st3002', 'stT3002');
+  setInterval(() => { probePool(); probeTool(3001,'st3001','stT3001'); probeTool(3003,'st3003','stT3003'); probeTool(3005,'st3005','stT3005'); probeTool(3007,'st3007','stT3007'); probeTool(3002,'st3002','stT3002'); }, 5000);
+</script>
+</body>
+</html>

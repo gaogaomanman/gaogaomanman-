@@ -1,0 +1,246 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --bg-deep: #1e1b4b;
+    --bg-mid: #312e81;
+    --bg-blue: #1e3a8a;
+    --fg: #f1f5f9;
+    --fg-muted: #c7d2fe;
+  }
+
+  html,
+  body,
+  #app {
+    min-height: 100%;
+  }
+
+  body {
+    font-family: 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+    color: var(--fg);
+    background:
+      radial-gradient(ellipse at top left, rgba(124, 58, 237, 0.25), transparent 50%),
+      radial-gradient(ellipse at top right, rgba(56, 189, 248, 0.25), transparent 50%),
+      radial-gradient(ellipse at bottom left, rgba(244, 114, 182, 0.2), transparent 50%),
+      linear-gradient(135deg, #1e1b4b 0%, #312e81 50%, #1e3a8a 100%);
+    background-attachment: fixed;
+  }
+}
+
+@layer components {
+  .glass-card {
+    @apply rounded-2xl border border-white/15 bg-white/10 shadow-glow backdrop-blur-xl;
+  }
+
+  .panel-title {
+    @apply mb-3.5 flex items-center gap-2 text-[17px] font-bold tracking-wide text-ink;
+  }
+
+  .panel-title::before {
+    content: '';
+    @apply h-[18px] w-1 shrink-0 rounded bg-gradient-to-b from-primary-light to-primary;
+  }
+
+  .tech-btn {
+    @apply inline-flex cursor-pointer items-center gap-2 rounded-2xl bg-gradient-to-r from-primary-light to-primary px-5 py-2 text-sm font-bold text-white shadow-[0_4px_14px_rgba(96,165,250,0.35)] transition-all hover:-translate-y-0.5 hover:shadow-[0_8px_22px_rgba(96,165,250,0.5)] active:translate-y-0;
+  }
+
+  .year-select {
+    @apply cursor-pointer rounded-2xl border border-white/20 bg-white/10 px-4 py-2 text-sm font-semibold text-ink backdrop-blur-xl transition-all focus:border-primary focus:shadow-[0_0_0_3px_rgba(167,139,250,0.25)] focus:outline-none;
+  }
+
+  .year-select option {
+    @apply bg-bg-deep text-ink;
+  }
+
+  .status-pill {
+    @apply rounded-3xl border border-white/20 bg-white/10 px-4 py-1.5 text-sm font-semibold backdrop-blur-xl;
+  }
+
+  .status-pill.connected {
+    @apply border-ok/50 bg-ok/15 text-ok;
+  }
+
+  .status-pill.error {
+    @apply border-err/50 bg-err/15 text-err;
+  }
+
+  .empty-tip {
+    @apply px-5 py-10 text-center text-sm text-ink-muted;
+  }
+}
+
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in-up {
+  animation: fade-in-up 0.4s ease-out both;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.loader {
+  @apply mx-auto mb-3 h-7 w-7 rounded-full border-[3px] border-white/20;
+  border-top-color: #60a5fa;
+  border-right-color: #a78bfa;
+  animation: spin 0.85s linear infinite;
+}
+
+/* ==================== 浅色页面主题（.page-light） ====================
+   /progress 专用：**对齐「一单一库核对 /cma」「LIMS统计查询 /dm」的浅色设计**——
+   白卡 + #f0f2f5 页面底 + #4f6ef7 主蓝 + #e0e4e8 细边框（调色板取自 CmaView 的 --vars，
+   2026-09-21 使用方明确要求参考这两个页面的 UI）。
+   ⚠️ 规则**故意不放在 @layer 里**：未分层样式优先级高于 Tailwind 分层工具类，
+   这样 .page-light .text-ink 能稳压 .text-ink，不需要 !important。
+   其它工具页面不加 .page-light，保持深色。 */
+.page-light {
+  --pl-primary: #4f6ef7;
+  --pl-primary-hover: #3b5de7;
+  --pl-text: #2c3e50;
+  --pl-text2: #7f8c8d;
+  --pl-border: #e0e4e8;
+  min-height: 100vh;
+  color: var(--pl-text);
+  background: #f0f2f5;
+}
+
+.page-light .glass-card {
+  background: #fff;
+  border-color: var(--pl-border);
+  border-radius: 10px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+  backdrop-filter: none;
+}
+
+/* 文字：深色主题的近白 → CMA 的正文/次要灰 */
+.page-light .text-ink { color: var(--pl-text); }
+.page-light .text-ink-muted { color: var(--pl-text2); }
+.page-light .text-ok { color: #27ae60; }
+.page-light .text-warn { color: #d48806; }
+.page-light .text-err { color: #e74c3c; }
+.page-light .text-cyan { color: #0e7490; }
+.page-light .text-green { color: #27ae60; }
+
+/* 语义底色/边色 → CMA 的淡绿/淡红/淡黄 */
+.page-light .bg-ok\/10 { background-color: #f4fbf6; }
+.page-light .bg-err\/10 { background-color: #fef6f5; }
+.page-light .bg-warn\/20,
+.page-light .bg-warn\/25 { background-color: #fff7e6; }
+.page-light .border-ok\/40 { border-color: #27ae60; }
+.page-light .border-err\/40 { border-color: #e74c3c; }
+.page-light .border-warn\/40 { border-color: #f39c12; }
+.page-light .border-warn\/70 { border-color: #d48806; }
+
+/* 白色系工具类（深色下是"提亮"）→ CMA 的浅灰面板色 */
+.page-light .bg-white\/5,
+.page-light .bg-white\/10 { background-color: #fafbfc; }
+.page-light .hover\:bg-white\/10:hover { background-color: #f0f2f5; }
+.page-light .border-white\/10,
+.page-light .border-white\/15,
+.page-light .border-white\/20 { border-color: var(--pl-border); }
+
+/* 输入 / 下拉 / 状态胶囊 */
+.page-light .year-select {
+  background-color: #fff;
+  border-color: var(--pl-border);
+  color: var(--pl-text);
+  border-radius: 8px;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+.page-light .year-select option { background-color: #fff; color: var(--pl-text); }
+.page-light .status-pill {
+  background-color: #fff;
+  border-color: var(--pl-border);
+  color: var(--pl-text2);
+  border-radius: 12px;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+.page-light .status-pill.connected {
+  background-color: #e8f5e9;
+  border-color: #a3d9a5;
+  color: #27ae60;
+}
+.page-light .status-pill.error {
+  background-color: #fef0ef;
+  border-color: #f5b7b1;
+  color: #e74c3c;
+}
+
+/* 主按钮：实色主蓝（对齐 CMA .btn-primary） */
+.page-light .tech-btn {
+  background: var(--pl-primary);
+  border-radius: 8px;
+  box-shadow: none;
+}
+.page-light .tech-btn:hover { background: var(--pl-primary-hover); }
+
+/* 选中态页签 / 考核表按钮：实色主蓝 */
+.page-light .from-primary-light\/90 {
+  --tw-gradient-from: var(--pl-primary) var(--tw-gradient-from-position);
+  --tw-gradient-to: var(--pl-primary) var(--tw-gradient-to-position);
+  --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to);
+}
+.page-light .to-primary\/90 { --tw-gradient-to: var(--pl-primary) var(--tw-gradient-to-position); }
+
+/* 大标题：渐变字 → 主蓝实色（对齐 CMA header h1），字号与 CMA 一致 */
+.page-light h1 {
+  background-image: none;
+  -webkit-text-fill-color: var(--pl-primary);
+  font-size: 20px;
+}
+
+/* 进度大表：表头深紫 → CMA 表头灰 */
+.page-light .bg-\[\#241f52\] { background-color: #fafbfc; }
+.page-light .bg-\[\#302a63\] { background-color: #f5f6f8; }
+.page-light .bg-\[\#2d2765\] { background-color: #f0f2f5; }
+.page-light .group:hover .group-hover\:bg-\[\#2d2765\] { background-color: #f5f6f8; }
+.page-light .group:hover .group-hover\:bg-white\/5 { background-color: #fafbfc; }
+
+/* 图标小按钮（表格里的 上移/下移/编辑 等）：白底细边，hover 变主蓝 */
+.page-light .icon-btn {
+  background-color: #fff;
+  border: 1px solid var(--pl-border);
+  border-radius: 6px;
+  color: var(--pl-text);
+}
+.page-light .icon-btn:hover {
+  background-color: #fff;
+  border-color: var(--pl-primary);
+  color: var(--pl-primary);
+}
+.page-light .icon-btn.text-err { color: #e74c3c; }
+.page-light .icon-btn.text-warn { color: #d48806; }
+
+/* 面板标题竖条：主蓝实色 */
+.page-light .panel-title::before { background-image: none; background-color: var(--pl-primary); }
+
+/* 总览卡片（StatCard）的大数字：实色主蓝 */
+.page-light .from-white {
+  --tw-gradient-from: var(--pl-primary) var(--tw-gradient-from-position);
+  --tw-gradient-to: var(--pl-primary) var(--tw-gradient-to-position);
+  --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to);
+}
+.page-light .to-\[\#e0e7ff\] { --tw-gradient-to: var(--pl-primary) var(--tw-gradient-to-position); }
+
+/* 加载圈 */
+.page-light .loader {
+  border-color: var(--pl-border);
+  border-top-color: var(--pl-primary);
+  border-right-color: #93a7f9;
+}

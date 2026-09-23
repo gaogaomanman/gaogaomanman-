@@ -29,6 +29,25 @@ export function notDetectedText(limitType: unknown, limitValue: unknown): string
   return '未检出'
 }
 
+/** 判定文本是否为「不合格」（样本级/单据级结论、单项目判定共用）。
+ *
+ * ⚠️ **只能正向匹配"不合格"，绝不能写成 `includes('合格')`**：
+ *    `'不合格'` 本身包含子串 `'合格'`，`'不符合'` 包含 `'符合'`。
+ *    实测全库有 30 条单据级结论同时含「不合格」和「合格」两个字样。
+ *
+ * ⚠️ 判定列是报告的最终结论，**必须以 LIMS 的结论为准**：不能因为单项目判定（`SINGLE_JUDGE`）
+ *    漏填就改判为「合格」。实测任务 RW2026042 的 12 张检测单里，9 张样本级结论已明写"不合格"，
+ *    但只有 2 张的单项目判定填了"不合格"；另有 7 张的涉事项目（恩诺沙星 140、环丙沙星 3.34，
+ *    远超残留限量）单项目判定却是 `/`（未判定）。
+ *
+ * 用法（三个模板统一）：`let hasFail = isFailText(样本级结论) || isFailText(单据级结论)`，
+ * 再在项目循环里 `if (isFailText(judge)) hasFail = true` 作交叉验证。
+ */
+export function isFailText(v: unknown): boolean {
+  const s = String(v ?? '')
+  return s.includes('不合格') || s.includes('不符合')
+}
+
 /** 原块内 parseCityCounty（2374 副本），未改动 */
 export function parseCityCounty(addr: string): string {
   if (!addr) return ''

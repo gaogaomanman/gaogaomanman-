@@ -3,8 +3,19 @@
  *
  * 逐字保留：两段 SQL、样品字段取值顺序、检测项目横向展开、`PESTICIDE_NAME_MAP` 映射、
  * `reorderPesticides` 分组、多值单元格换行并标红、综合判定兜底、表头配色与文件名。
+ *
+ * 判定口径修正（2026-09-23）：「综合判定」列原先**优先照抄**单据级散文（`d.EVALUATE_RESULT`），
+ * 只有它为空时才退回单项目判定，且**从不看**样本级结论。现与省例行四块统一 ——
+ * `isFailText(样本级) || isFailText(单据级)` 优先（谓词见 `provinceCommon.isFailText`），
+ * 单项目判定保留作交叉验证；该列**只输出 `合格` / `不合格`**，不再出现散文。
+ * 实测（本块取数按任务号，取该合同下的两个任务号）：
+ *   - `RW2026042`（12 个样品 / 9 个不合格）：旧实现这 9 行**全是散文**（显示「不合格」的 0 行）；
+ *   - `RW2026034`（92 个样品 / 2 个不合格）：旧实现 1 行散文（`JSLX032026010106`），
+ *     另 1 行 `JSLX032026010107` 虽单据级为空，但其单项目判定已填「不合格」→ 退回分支侥幸判对。
+ *   改后两个任务分别 9 / 2 行「不合格」，与 LIMS 基准**完全一致（漏 0 / 多 0）**。
  */
 import { createStyledExcel, dmQuery, PESTICIDE_NAME_MAP, reorderPesticides, type CellValue } from '../helpers'
+import { isFailText } from './provinceCommon'
 import { danger, esc, ok, warn, type DmOutcome } from '../outcome'
 import { resolveTaskNo } from './taskResolve'
 
@@ -26,7 +37,7 @@ export async function queryByTaskNo(p: TaskNoParams): Promise<DmOutcome> {
       'SELECT s.ID, s.SMALL_NO, s.NAME, s.ORIGINAL_NO, s.SAMPLING_POSITION, s.SAMPLE_NUM, s.SAMPLE_NUM_UNIT_NAME, ' +
         'd.NO, d.BUSINESS_CATEGORY_NAME, d.DETECTED_COMPANY_NAME, d.DETECTED_COMPANY_ADDRESS, ' +
         'd.PRODUCTION_COMPANY_NAME, d.SAMPLING_COMPANY, d.SAMPLING_USER_NAME, d.SAMPLING_DATE, ' +
-        'd.ACCEPT_ORG_NAME, d.EVALUATE_RESULT ' +
+        'd.ACCEPT_ORG_NAME, d.EVALUATE_RESULT, s.EVALUATE_RESULT ' +
         'FROM DETECTION.DT_DETECTION d ' +
         'LEFT JOIN DETECTION.DT_SAMPLE s ON s.DETECTION_NO = d.NO AND s.IS_DELETED = 0 ' +
         "WHERE d.TASK_NO = '" + taskNo.replace(/'/g, "''") + "' AND d.IS_DELETED = 0 " +
@@ -68,7 +79,10 @@ export async function queryByTaskNo(p: TaskNoParams): Promise<DmOutcome> {
       samplingUser: string
       samplingDate: unknown
       acceptOrg: string
+      /** 单据级结论 d.EVALUATE_RESULT（散文，仅作兜底） */
       evaluateResult: string
+      /** 样本级结论 s.EVALUATE_RESULT（规范枚举：符合 / 不合格 / 不符合 / 空），首选判定依据 */
+      sampleEvaluate: string
     }
 
     const sampleInfo: Record<string, SampleInfo> = {}
@@ -88,7 +102,9 @@ export async function queryByTaskNo(p: TaskNoParams): Promise<DmOutcome> {
         samplingUser: String(s[13] || ''),
         samplingDate: s[14] || '',
         acceptOrg: String(s[15] || ''),
-        evaluateResult: String(s[16] || ''),
+        evaluateResult: String(s[16] || ''), // d.EVALUATE_RESULT（散文，仅作兜底）
+        // s.EVALUATE_RESULT —— 追加在 SQL 末尾，不移动既有列的下标
+        sampleEvaluate: String(s[17] || ''),
       }
     }
 
@@ -162,7 +178,13 @@ export async function queryByTaskNo(p: TaskNoParams): Promise<DmOutcome> {
           }
         }
       }
-      row['综合判定'] = info.evaluateResult || (hasFail ? '不合格' : '合格')
+      // 判定依据（任一命中即「不合格」）：与省例行四块统一 ——
+      //   1) 样本级结论 s.EVALUATE_RESULT（规范枚举，首选）；
+      //   2) 单据级结论 d.EVALUATE_RESULT（散文，兜底）；
+      //   3) 检测项目列的单项目判定（原有逻辑，保留作交叉验证）。
+      // 该列**只输出 `合格` / `不合格`**（2026-09-23 变更，不再照抄单据级散文）。
+      row['综合判定'] =
+        isFailText(info.sampleEvaluate) || isFailText(info.evaluateResult) || hasFail ? '不合格' : '合格'
       rows.push(row)
     }
 

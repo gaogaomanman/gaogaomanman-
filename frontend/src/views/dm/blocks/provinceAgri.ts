@@ -18,11 +18,19 @@
  * `buildContractCond()`（`d.CONTRACTS_NO LIKE`，支持逗号/分号分隔多值），其余取数、
  * 列定义、合并折算、判定口径与文件名规则完全不变。
  * 新增「多任务编号输入」：任务编号走 `resolveTaskCond`（多个/免输 RW 前缀，IN 匹配）。
+ *
+ * 判定口径修正（2026-09-23）：结果判定列原先只由 73 个农药列的**单项目判定**推出，
+ * 而 `resolveColumn` 对不属于这 73 列的项目直接 `if (!hit) continue`，于是 LIMS 样本级结论
+ * 明写「不合格」也进不了判定列。现改为 `isFailText(s.EVALUATE_RESULT) || isFailText(d.EVALUATE_RESULT)`
+ * **优先**（谓词定义见 `provinceCommon.isFailText`，三模板共用），单项目判定保留作交叉验证。
+ * 实测合同 PS2026004（805 个样品，LIMS 结论不合格 **21** 个）：旧实现只认出 **2** 个
+ * （仅「涉事项目落进这 73 列且单项目判定填了不合格」的那些），新实现 21 个（**修正 19 处**，
+ * 差异仅判定列、逐格零变化）。
  */
 import { buildContractCond, createStyledExcel, dmQuery, type CellValue } from '../helpers'
 import { danger, esc, ok, warn, type DmOutcome } from '../outcome'
 import { resolveTaskCond, taskFileStamp, taskListLabel } from './taskResolve'
-import { formatSigNum, notDetectedText, parseCityCounty } from './provinceCommon'
+import { formatSigNum, isFailText, notDetectedText, parseCityCounty } from './provinceCommon'
 import { ensureRules, factorOf, findGroupByTarget, getRule, resolveColumn, resolveName } from '../rules'
 import { resolveCell, type SubValue } from '../merge'
 
@@ -78,7 +86,8 @@ export async function queryProvinceRoutineAgri(p: ProvinceAgriParams): Promise<D
     const detData = await dmQuery(
       'SELECT s.ID, s.SMALL_NO, s.NAME, s.SAMPLING_POSITION, ' +
         'd.NO, d.BUSINESS_CATEGORY_NAME, d.DETECTED_COMPANY_NAME, d.DETECTED_COMPANY_ADDRESS, ' +
-        'd.SAMPLING_DATE, d.ACCEPT_ORG_NAME, d.EVALUATE_RESULT, s.ORIGINAL_NO ' +
+        'd.SAMPLING_DATE, d.ACCEPT_ORG_NAME, d.EVALUATE_RESULT, s.ORIGINAL_NO, ' +
+        's.EVALUATE_RESULT ' +
         'FROM DETECTION.DT_DETECTION d ' +
         'LEFT JOIN DETECTION.DT_SAMPLE s ON s.DETECTION_NO = d.NO AND s.IS_DELETED = 0 ' +
         'WHERE d.IS_DELETED = 0' + whereCond + ' ' +
@@ -107,6 +116,10 @@ export async function queryProvinceRoutineAgri(p: ProvinceAgriParams): Promise<D
       samplingPosition: string
       detectedCompany: string
       address: string
+      /** 单据级结论 d.EVALUATE_RESULT（散文，如「…判为不合格品。」），仅作兜底 */
+      evaluateResult: string
+      /** 样本级结论 s.EVALUATE_RESULT（规范枚举：符合 / 不合格 / 不符合 / 空），首选判定依据 */
+      sampleEvaluate: string
     }
 
     const sampleInfo: Record<string, AgriSampleInfo> = {}
@@ -117,6 +130,9 @@ export async function queryProvinceRoutineAgri(p: ProvinceAgriParams): Promise<D
         samplingPosition: String(s[3] || ''), // s.SAMPLING_POSITION（抽样环节）
         detectedCompany: String(s[6] || ''),
         address: String(s[7] || ''), // 受检单位所在地（抽样地点）
+        evaluateResult: String(s[10] || ''), // d.EVALUATE_RESULT
+        // s.EVALUATE_RESULT —— 追加在 SQL 末尾，不移动既有列的下标
+        sampleEvaluate: String(s[12] || ''),
       }
     }
 
@@ -195,7 +211,18 @@ export async function queryProvinceRoutineAgri(p: ProvinceAgriParams): Promise<D
 
       const rowIdx = rows.length
       const results = resultsBySample[sid] || {}
-      let hasFail = false
+      // 判定依据（任一命中即「不合格」）：
+      //   1) 样本级结论 s.EVALUATE_RESULT —— 规范枚举（符合 / 不合格 / 不符合 / 空），首选；
+      //   2) 单据级结论 d.EVALUATE_RESULT —— 散文兜底；
+      //   3) 73 个农药列的单项目判定 —— 原有逻辑，保留作交叉验证。
+      //
+      // ⚠️ 事故背景（2026-09-23）：旧逻辑只从本模板的 73 个农药列推判定，而 `resolveColumn`
+      //    对不属于这 73 列的项目直接 `if (!hit) continue`。实测合同 PS2026004（805 个样品）：
+      //    LIMS 结论判不合格的有 21 个，其中**只有 12 个**的单项目判定填了「不合格」，
+      //    而落进这 73 个农药列的仅 **2 个** —— 旧实现正是只认出这 2 个，另 19 个导出成「合格」。
+      //    即漏判有**两个叠加原因**：单项目判定漏填、涉事项目不在本模板列清单内。
+      //    判定列是报告的最终结论，必须以 LIMS 的结论为准。
+      let hasFail = isFailText(info.sampleEvaluate) || isFailText(info.evaluateResult)
       for (const item of PROVINCE_ROUTINE_AGRI_DRUGS) {
         const res = results[item]
         if (!res) continue
@@ -230,7 +257,7 @@ export async function queryProvinceRoutineAgri(p: ProvinceAgriParams): Promise<D
           } else {
             row[item] = notDetectedText(res.limitType, res.limitValue)
           }
-          if (res.judge && (res.judge.includes('不合格') || res.judge === '不符合')) hasFail = true
+          if (isFailText(res.judge)) hasFail = true
         }
       }
       row['结果判定（合格或不合格）'] = hasFail ? '不合格' : '合格'

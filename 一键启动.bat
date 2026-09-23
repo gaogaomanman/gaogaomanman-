@@ -16,13 +16,12 @@ cd /d "%~dp0"
 REM 日志目录
 if not exist "%~dp0_logs" mkdir "%~dp0_logs"
 
-REM 前端构建产物检查（未构建则先构建）
-if not exist "%~dp0frontend\dist\index.html" (
-    echo [构建] 未发现前端产物 dist，正在构建...
-    pushd "%~dp0frontend"
-    call npm run build
-    popd
-)
+REM 释放端口残留（避免重复启动/端口占用冲突）
+REM   2026-09-23：这一步从「构建之后」提到「构建之前」——构建前需要先停掉占用
+REM   dist 的服务进程，否则 dist 清不干净（见下面构建分支的说明）。
+echo [清理] 释放 8080 端口残留进程...
+powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { try { Stop-Process -Id $_.OwningProcess -Force } catch {} }" 2>nul
+ping -n 2 127.0.0.1 >nul
 
 REM Python 解释器（统一工程使用 aitools 环境）
 set "PY=%USERPROFILE%\miniconda3\envs\aitools\python.exe"
@@ -33,10 +32,20 @@ if not exist "%PY%" (
     exit /b 1
 )
 
-REM 释放端口残留（避免重复启动/端口占用冲突）
-echo [清理] 释放 8080 端口残留进程...
-powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { try { Stop-Process -Id $_.OwningProcess -Force } catch {} }" 2>nul
-ping -n 2 127.0.0.1 >nul
+REM 前端构建产物检查（未构建则先构建）
+REM   构建前先清空 dist：vite 自带的「清空 outDir」在本机被安全删除机制拦住（不报错也不清），
+REM   旧 chunk 会一轮轮堆在 dist\assets 里（实测曾从 22 个涨到 223 个），
+REM   干扰「产物里到底有没有某次改动」的排查。
+REM   `npm run build` 另有 prebuild 钩子（scripts/clean-dist.mjs）兜底，手动构建同样生效；
+REM   这里显式再清一次，是为了让单独跑本 .bat 也能得到干净产物。
+if not exist "%~dp0frontend\dist\index.html" (
+    echo [清理] 删除旧的前端产物 dist...
+    powershell -NoProfile -Command "Remove-Item '%~dp0frontend\dist' -Recurse -Force -ErrorAction SilentlyContinue"
+    echo [构建] 未发现前端产物 dist，正在构建...
+    pushd "%~dp0frontend"
+    call npm run build
+    popd
+)
 
 REM 启动统一后端（同时提供 /api 与前端页面）
 echo [1/1] 启动 统一服务 (:8080)...

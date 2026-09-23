@@ -9,7 +9,10 @@
  * - 规范化优先 `PROVINCE_ROUTINE_AQUATIC_MAP`，其次 `PESTICIDE_NAME_MAP`；
  * - 匹配规则只有两级（精确/去括号基础名 → 列名包含），**没有合并组步骤**（该块各兽药为独立列）；
  * - 单元格取值：重复记录分行列出**原始值**并标红，否则取首个非空值，无值写 `未检出`；
- * - **本块不计算「结果判定」**：`判定结果` 直接取 `d.EVALUATE_RESULT`，为空时兜底 `合格`（与农/畜块的 hasFail 逻辑不同）；
+ * - **「判定结果」只输出 `合格` / `不合格`**（2026-09-23 变更）：原先**逐字照抄单据级散文**
+ *   （如「该批（次）产品经检验检测，依据规定，判为不合格品。」）、为空时兜底 `合格`；
+ *   现与农/畜块统一 —— `isFailText(样本级结论) || isFailText(单据级结论)` 优先，
+ *   本项目列的单项目判定作交叉验证（谓词见 `provinceCommon.isFailText`）；
  * - 空值导出填 `-`；样品按编号 `localeCompare(..., 'zh-CN', {numeric:true})` 排序。
  *
  * 新增「多任务编号输入」：任务编号支持多个（逗号/分号/空白分隔），纯数字或小写 rw 自动补全为
@@ -21,6 +24,7 @@
 import { buildContractCond, createStyledExcel, dmQuery, type CellValue } from '../helpers'
 import { danger, esc, ok, warn, type DmOutcome } from '../outcome'
 import { mapAquaLoop, mapAquaPlace, parseAddressLevels } from '../helpers'
+import { isFailText } from './provinceCommon'
 import { resolveTaskCond, taskFileStamp, taskListLabel } from './taskResolve'
 import { ensureRules, factorOf, findGroupByTarget, getRule, resolveColumn, resolveName } from '../rules'
 import { resolveCell, type SubValue } from '../merge'
@@ -72,7 +76,8 @@ export async function queryProvinceRoutineAquatic(p: ProvinceAquaticParams): Pro
     const detData = await dmQuery(
       'SELECT s.ID, s.SMALL_NO, s.NAME, s.SAMPLING_POSITION, ' +
         'd.NO, d.BUSINESS_CATEGORY_NAME, d.DETECTED_COMPANY_NAME, d.DETECTED_COMPANY_ADDRESS, ' +
-        'd.PRODUCTION_COMPANY_NAME, d.PRODUCTION_COMPANY_ADDRESS, d.EVALUATE_RESULT, s.ORIGINAL_NO ' +
+        'd.PRODUCTION_COMPANY_NAME, d.PRODUCTION_COMPANY_ADDRESS, d.EVALUATE_RESULT, s.ORIGINAL_NO, ' +
+        's.EVALUATE_RESULT ' +
         'FROM DETECTION.DT_DETECTION d ' +
         'LEFT JOIN DETECTION.DT_SAMPLE s ON s.DETECTION_NO = d.NO AND s.IS_DELETED = 0 ' +
         'WHERE d.IS_DELETED = 0' + whereCond + ' ' +
@@ -110,6 +115,8 @@ export async function queryProvinceRoutineAquatic(p: ProvinceAquaticParams): Pro
       opCounty: string
       origin: string
       evaluate: string
+      /** 样本级结论 s.EVALUATE_RESULT（规范枚举：符合 / 不合格 / 不符合 / 空），首选判定依据 */
+      sampleEvaluate: string
     }
 
     const sampleInfo: Record<string, AqSampleInfo> = {}
@@ -132,7 +139,9 @@ export async function queryProvinceRoutineAquatic(p: ProvinceAquaticParams): Pro
         opCity: op.city,
         opCounty: op.county,
         origin: String(s[8] || ''), // 溯源产地 = 生产单位
-        evaluate: String(s[10] || ''), // 判定结果
+        evaluate: String(s[10] || ''), // 单据级结论 d.EVALUATE_RESULT（散文，仅作兜底）
+        // s.EVALUATE_RESULT —— 追加在 SQL 末尾，不移动既有列的下标
+        sampleEvaluate: String(s[12] || ''),
       }
     }
 
@@ -206,16 +215,28 @@ export async function queryProvinceRoutineAquatic(p: ProvinceAquaticParams): Pro
       row['溯源市'] = info.opCity
       row['溯源县'] = info.opCounty
       row['溯源产地'] = info.origin
-      row['判定结果'] = info.evaluate || '合格'
       row['检测单位'] = '苏州市农产品质量安全监测中心'
 
       const rowIdx = rows.length
       const results = resultsBySample[sid] || {}
+      // 判定依据（任一命中即「不合格」）：
+      //   1) 样本级结论 s.EVALUATE_RESULT（规范枚举：符合 / 不合格 / 不符合 / 空，首选）；
+      //   2) 单据级结论 d.EVALUATE_RESULT（散文，兜底）；
+      //   3) 本项目列的单项目判定（交叉验证）。
+      //
+      // ⚠️ 2026-09-23 变更：原先本列**逐字照抄单据级散文**（「该批（次）产品经检验检测，……判为
+      //    不合格品。」）、单据级为空时兜底「合格」——既不好用，也会把「单据级为空但样本级已判
+      //    不符合」的样品导成「合格」（实测合同 PS2026004 的 JSLX032026010107 即此情形）。
+      //    现统一为只输出 `合格` / `不合格`，口径与农/畜块一致。
+      let hasFail = isFailText(info.sampleEvaluate) || isFailText(info.evaluate)
       for (const item of PROVINCE_ROUTINE_AQUATIC_DRUGS) {
         const res = results[item]
         if (!res || !res.subValues || res.subValues.length === 0) continue
-        // 本块各兽药为独立列：取首个检出值；同一项目多条时分行列出并标红；
-        // 判定不参与（本块的「判定结果」取 d.EVALUATE_RESULT）
+        // 单项目判定作交叉验证（存在「两级结论都为空、但项目级判定已写不合格」的样品）
+        for (const sv of res.subValues) {
+          if (isFailText(sv.judge)) hasFail = true
+        }
+        // 本块各兽药为独立列：取首个检出值；同一项目多条时分行列出并标红
         const plan = resolveCell(res.subValues, {
           combine: rule.defaultCombine,
           // 判重一律按项目名（「整组判重」已于 2026-09-22 取消）
@@ -234,6 +255,7 @@ export async function queryProvinceRoutineAquatic(p: ProvinceAquaticParams): Pro
           row[item] = '未检出'
         }
       }
+      row['判定结果'] = hasFail ? '不合格' : '合格'
       rows.push(row)
     }
 

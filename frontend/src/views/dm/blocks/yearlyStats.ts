@@ -17,10 +17,17 @@
  *   合并组按 `x.dn` 分组判断重复，但子项对象字段名是 `subName`（无 `dn`），
  *   导致分组键恒为 `undefined`——等价于"只要该组有多条子项记录即判定为重复"，
  *   因而走"分行列出"而非"加权求和"。如需修正会改变导出结果，故留待确认。
+ *
+ * 判定口径修正（2026-09-23）：「判定结果」列原先**只**由动态项目列的单项目判定推出，
+ * 样品 SQL **一个结论字段都没查**。现补取 `s.EVALUATE_RESULT` / `d.EVALUATE_RESULT`
+ * （追加在 SQL 末尾，不移动既有列下标），判定改为
+ * `isFailText(样本级) || isFailText(单据级)` **优先**（谓词见 `provinceCommon.isFailText`），
+ * 单项目判定保留作交叉验证；该列只输出 `合格` / `不合格`。
+ * 实测合同 PS2026004：21 个不合格样品里有 9 个的单项目判定完全没填 → 旧实现必判「合格」。
  */
 import { createStyledExcel, dmQuery, NEW_KIND_MAP, buildContractCond, reorderPesticides, type CellValue } from '../helpers'
 import { danger, esc, ok, warn, type DmOutcome } from '../outcome'
-import { formatSigNum, notDetectedText, parseCityCounty } from './provinceCommon'
+import { formatSigNum, isFailText, notDetectedText, parseCityCounty } from './provinceCommon'
 import { ensureRules, factorOf, findGroupByMember, findGroupByTarget, getRule, resolveName } from '../rules'
 import { resolveCell, type SubValue } from '../merge'
 
@@ -91,7 +98,7 @@ export async function queryNewTemplate(p: YearlyStatsParams): Promise<DmOutcome>
     const detData = await dmQuery(
       'SELECT s.ID, s.SMALL_NO, s.NAME, s.SAMPLING_POSITION, s.SAMPLE_CATEGORY_NAME, ' +
         'd.NO, d.DETECTED_COMPANY_NAME, d.DETECTED_COMPANY_ADDRESS, d.ACCEPT_TIME, ' +
-        'd.TASK_NAME, d.CONTRACTS_NO ' +
+        'd.TASK_NAME, d.CONTRACTS_NO, s.EVALUATE_RESULT, d.EVALUATE_RESULT ' +
         'FROM DETECTION.DT_DETECTION d ' +
         'LEFT JOIN DETECTION.DT_SAMPLE s ON s.DETECTION_NO = d.NO AND s.IS_DELETED = 0 ' +
         'WHERE d.IS_DELETED = 0 AND ' + yearCond + contractCond + ' ' +
@@ -128,6 +135,10 @@ export async function queryNewTemplate(p: YearlyStatsParams): Promise<DmOutcome>
       acceptTime: unknown
       taskName: string
       contractsNo: string
+      /** 样本级结论 s.EVALUATE_RESULT（规范枚举：符合 / 不合格 / 不符合 / 空），首选判定依据 */
+      sampleEvaluate: string
+      /** 单据级结论 d.EVALUATE_RESULT（散文，如「…判为不合格品。」），仅作兜底 */
+      evaluateResult: string
     }
 
     const sampleInfo: Record<string, YearSampleInfo> = {}
@@ -142,6 +153,9 @@ export async function queryNewTemplate(p: YearlyStatsParams): Promise<DmOutcome>
         acceptTime: s[8] || '',
         taskName: String(s[9] || ''),
         contractsNo: String(s[10] || ''),
+        // 两列结论追加在 SQL 末尾，不移动既有列的下标
+        sampleEvaluate: String(s[11] || ''), // s.EVALUATE_RESULT
+        evaluateResult: String(s[12] || ''), // d.EVALUATE_RESULT
       }
     }
 
@@ -240,7 +254,16 @@ export async function queryNewTemplate(p: YearlyStatsParams): Promise<DmOutcome>
 
       const rowIdx = rows.length
       const results = resultsBySample[sampleId] || {}
-      let hasFail = false
+      // 判定依据（任一命中即「不合格」）：与省例行四块统一 ——
+      //   1) 样本级结论 s.EVALUATE_RESULT（规范枚举，首选）；
+      //   2) 单据级结论 d.EVALUATE_RESULT（散文，兜底）；
+      //   3) 动态项目列的单项目判定（原有逻辑，保留作交叉验证）。
+      //
+      // ⚠️ 事故背景（2026-09-23）：旧实现的样品 SQL **一个结论字段都没查**，判定只由单项目判定推出。
+      //    实测合同 PS2026004 的 21 个不合格样品中，有 **9 个**的单项目判定完全没填，
+      //    旧实现必然把它们导出成「合格」。注意本块的项目列是**动态生成**的，
+      //    不存在「涉事项目不在固定列清单」那一类漏判（那类只影响省例行农/畜产品块）。
+      let hasFail = isFailText(info.sampleEvaluate) || isFailText(info.evaluateResult)
       for (const pi of pesticides) {
         const res = results[pi]
         if (!res) continue

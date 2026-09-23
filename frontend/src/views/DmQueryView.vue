@@ -24,7 +24,7 @@ import { noTypeLabel, parseNoList, resolveNoType, NEW_KIND_NAMES } from './dm/he
 import type { DmOutcome } from './dm/outcome'
 import { queryByTaskNo } from './dm/blocks/taskNo'
 import { queryByDetectionNo, queryByContractNo } from './dm/blocks/detectionNo'
-import { queryJiangsuTaskNo, type JiangsuVariant } from './dm/blocks/jiangsu'
+import { queryJiangsuTaskNo } from './dm/blocks/jiangsu'
 import { queryMonitorSummaryTable } from './dm/blocks/monitorSummary'
 import { queryTaskStats } from './dm/blocks/taskStats'
 import { queryMonthlyReport } from './dm/blocks/monthlyReport'
@@ -101,7 +101,6 @@ const collapsedTpl2 = ref(false)
 const results = reactive<Record<string, DmOutcome | null>>({
   taskQueryResult: null,
   taskQueryResult2: null,
-  taskQueryResult3: null,
   taskQueryResult4: null,
   taskQueryResult5: null,
   taskQueryResult6: null,
@@ -139,7 +138,6 @@ async function doTaskNo(exactTaskNo?: string): Promise<void> {
    注意：这些 ref 必须声明在使用它们的处理函数（江苏追溯等）之前，
    否则 `const` 的暂时性死区会在模块求值时抛 ReferenceError，导致整个路由渲染为空。 */
 const taskNoInput2 = ref('')
-const taskNoInput3 = ref('')
 const taskNoInput4 = ref('')
 const taskNoInput5 = ref('')
 const taskNoInput5b = ref('')
@@ -152,44 +150,49 @@ const taskNoInputLivestock = ref('')
 const taskNoInputAquatic = ref('')
 
 /* 按合同号导出（新增）：支持逗号/分号分隔多值，模糊匹配 CONTRACTS_NO */
-const contractNo2 = ref('') // 江苏省追溯平台-监督抽查
-const contractNo3 = ref('') // 江苏省追溯平台-例行监测
+const contractNo2 = ref('') // 江苏省追溯平台
 const contractNoAgri = ref('') // 省例行农产品
 const contractNoLivestock = ref('') // 省例行畜产品
 const contractNoAquatic = ref('') // 省例行水产品
 const detectionNoContract = ref('') // 报检编号+小号 → 检测项目及方法
 
-/* ==================== 江苏省追溯平台（监督抽查 / 例行监测） ==================== */
-const jiangsuInputs = { 监督抽查: taskNoInput2, 例行监测: taskNoInput3 } as const
-const jiangsuKeys = { 监督抽查: 'taskQueryResult2', 例行监测: 'taskQueryResult3' } as const
+/* ==================== 江苏省追溯平台（单一模板） ====================
+   2026-09-23 合并原「监督抽查」「例行监测」两个变体：两者除「监测类别」「抽样单位」外
+   逐行一致，而这两列本就该取自数据（d.BUSINESS_CATEGORY_NAME），见 jiangsu.ts 头部注释。 */
+const jiangsuKey = 'taskQueryResult2'
 
-async function doJiangsu(variant: JiangsuVariant, exactTaskNo?: string): Promise<void> {
-  const key = jiangsuKeys[variant]
-  results[key] = null
+/* 产品类别筛选（参考「年度数据快速统计」）：默认全选 = 不筛选，取消勾选才真正过滤 */
+const showJiangsuKindBox = ref(false)
+const jiangsuKindChecked = reactive<Record<string, boolean>>(
+  Object.fromEntries(NEW_KIND_NAMES.map((k) => [k, true])),
+)
+const selectedJiangsuKinds = computed(() => NEW_KIND_NAMES.filter((k) => jiangsuKindChecked[k]))
+
+async function doJiangsu(exactTaskNo?: string): Promise<void> {
+  results[jiangsuKey] = null
   loading.value = true
   try {
-    results[key] = await queryJiangsuTaskNo({
-      variant,
+    results[jiangsuKey] = await queryJiangsuTaskNo({
       exactTaskNo,
-      inputValue: jiangsuInputs[variant].value,
-      setProgress: setProgress(key),
+      inputValue: taskNoInput2.value,
+      kinds: selectedJiangsuKinds.value,
+      setProgress: setProgress(jiangsuKey),
     })
   } finally {
     loading.value = false
   }
 }
 
-/* 按合同号导出（江苏省追溯平台：监督抽查 / 例行监测） */
-async function doJiangsuContract(variant: JiangsuVariant): Promise<void> {
-  const key = jiangsuKeys[variant]
-  results[key] = null
+/* 按合同号导出（江苏省追溯平台） */
+async function doJiangsuContract(): Promise<void> {
+  results[jiangsuKey] = null
   loading.value = true
   try {
-    results[key] = await queryJiangsuTaskNo({
-      variant,
-      inputValue: jiangsuInputs[variant].value,
-      contractNo: (variant === '监督抽查' ? contractNo2 : contractNo3).value,
-      setProgress: setProgress(key),
+    results[jiangsuKey] = await queryJiangsuTaskNo({
+      inputValue: taskNoInput2.value,
+      contractNo: contractNo2.value,
+      kinds: selectedJiangsuKinds.value,
+      setProgress: setProgress(jiangsuKey),
     })
   } finally {
     loading.value = false
@@ -489,30 +492,30 @@ onMounted(() => {
         </div>
         <div class="card-body" :class="{ hide: collapsedTpl2 }" id="tplBody2">
           <div style="padding:12px;background:#e8f5e9;border-radius:8px;border:1px solid #a5d6a7;margin-bottom:10px;">
-            <p style="font-size:13px;font-weight:700;margin-bottom:4px;color:#2e7d32;">📋 江苏省追溯平台-监督抽查</p>
-            <p style="font-size:11px;color:var(--text2);margin-bottom:8px;">参数列以检测项目名横向展开；任务编号可多个（逗号分隔、可省略RW），也可按合同号导出</p>
+            <p style="font-size:13px;font-weight:700;margin-bottom:4px;color:#2e7d32;">📋 江苏省追溯平台</p>
+            <p style="font-size:11px;color:var(--text2);margin-bottom:8px;">参数列以检测项目名横向展开；任务编号可多个（逗号分隔、可省略RW），也可按合同号导出。「监测类别」「抽样单位」按库里的业务类别自动填写（监督抽检→监督抽查，抽样单位=苏州市农业农村局；其余类别抽样单位=苏州市农产品质量安全监测中心）</p>
             <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
               <input v-model="taskNoInput2" type="text" id="taskNoInput2" placeholder="任务编号，可多个（逗号分隔，可省略RW）" style="flex:1;min-width:160px;padding:8px 12px;border:2px solid #2e7d32;border-radius:8px;font-size:14px;outline:none;" />
-              <button class="btn btn-primary" style="padding:8px 24px;font-weight:700;background:#2e7d32;border-color:#2e7d32;" @click="doJiangsu('监督抽查')">🚀 查询导出</button>
-              <input v-model="contractNo2" type="text" id="contractNo2" placeholder="合同号（多个用逗号分隔）" style="width:190px;padding:8px 12px;border:2px solid #2e7d32;border-radius:8px;font-size:14px;outline:none;" @keydown.enter="doJiangsuContract('监督抽查')" />
-              <button class="btn btn-primary" style="padding:8px 18px;font-weight:700;background:#fff;color:#2e7d32;border:2px solid #2e7d32;" @click="doJiangsuContract('监督抽查')">📄 按合同号导出</button>
+              <button class="btn btn-primary" style="padding:8px 24px;font-weight:700;background:#2e7d32;border-color:#2e7d32;" @click="doJiangsu()">🚀 查询导出</button>
+              <input v-model="contractNo2" type="text" id="contractNo2" placeholder="合同号（多个用逗号分隔）" style="width:190px;padding:8px 12px;border:2px solid #2e7d32;border-radius:8px;font-size:14px;outline:none;" @keydown.enter="doJiangsuContract()" />
+              <button class="btn btn-primary" style="padding:8px 18px;font-weight:700;background:#fff;color:#2e7d32;border:2px solid #2e7d32;" @click="doJiangsuContract()">📄 按合同号导出</button>
+              <button type="button" class="btn btn-primary" style="padding:8px 12px;font-size:13px;background:#2e7d32;border-color:#2e7d32;" @click="showJiangsuKindBox = !showJiangsuKindBox">产品类别▾</button>
+              <div id="jiangsuKindBox" style="width:100%;margin-top:8px;padding:10px;background:#f1f8e9;border:1px solid #c5e1a5;border-radius:8px;" :style="showJiangsuKindBox ? undefined : { display: 'none' }">
+                <p style="font-size:11px;color:var(--text2);margin-bottom:6px;">按样品类别过滤（沿用「年度数据快速统计」的同一套归类）；<b>全部勾选 = 不筛选</b>，取消勾选即真正过滤</p>
+                <div id="jiangsuKinds" style="display:flex;flex-wrap:wrap;gap:8px;">
+                  <label
+                    v-for="k in NEW_KIND_NAMES"
+                    :key="k"
+                    class="tpl-kind"
+                    style="display:inline-flex;align-items:center;gap:5px;padding:4px 10px;background:#fff;border:1px solid #c5e1a5;border-radius:16px;font-size:12px;cursor:pointer;user-select:none;"
+                  >
+                    <input v-model="jiangsuKindChecked[k]" type="checkbox" :value="k" style="accent-color:#2e7d32;cursor:pointer;" />{{ k }}
+                  </label>
+                </div>
+              </div>
             </div>
             <div id="taskQueryResult2" style="margin-top:8px;">
-              <BlockResult :outcome="results.taskQueryResult2" @pick-task="(t: string) => doJiangsu('监督抽查', t)" />
-            </div>
-          </div>
-
-          <div style="padding:12px;background:#fff7e6;border-radius:8px;border:1px solid #ffd591;margin-bottom:10px;">
-            <p style="font-size:13px;font-weight:700;margin-bottom:4px;color:#d48806;">📋 江苏省追溯平台-例行监测</p>
-            <p style="font-size:11px;color:var(--text2);margin-bottom:8px;">与监督抽查格式相同，区别：监测类别=例行监测、抽样单位=苏州市农产品质量安全监测中心；任务编号可多个（可省略RW），也可按合同号导出</p>
-            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
-              <input v-model="taskNoInput3" type="text" id="taskNoInput3" placeholder="任务编号，可多个（逗号分隔，可省略RW）" style="flex:1;min-width:160px;padding:8px 12px;border:2px solid #d48806;border-radius:8px;font-size:14px;outline:none;" />
-              <button class="btn btn-primary" style="padding:8px 24px;font-weight:700;background:#d48806;border-color:#d48806;" @click="doJiangsu('例行监测')">🚀 查询导出</button>
-              <input v-model="contractNo3" type="text" id="contractNo3" placeholder="合同号（多个用逗号分隔）" style="width:190px;padding:8px 12px;border:2px solid #d48806;border-radius:8px;font-size:14px;outline:none;" @keydown.enter="doJiangsuContract('例行监测')" />
-              <button class="btn btn-primary" style="padding:8px 18px;font-weight:700;background:#fff;color:#d48806;border:2px solid #d48806;" @click="doJiangsuContract('例行监测')">📄 按合同号导出</button>
-            </div>
-            <div id="taskQueryResult3" style="margin-top:8px;">
-              <BlockResult :outcome="results.taskQueryResult3" @pick-task="(t: string) => doJiangsu('例行监测', t)" />
+              <BlockResult :outcome="results.taskQueryResult2" @pick-task="(t: string) => doJiangsu(t)" />
             </div>
           </div>
 

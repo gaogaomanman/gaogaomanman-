@@ -17,11 +17,18 @@
  * `buildContractCond()`（`d.CONTRACTS_NO LIKE`，支持逗号/分号分隔多值），其余取数、
  * 列定义、加和规则、判定口径与文件名规则完全不变。
  * 新增「多任务编号输入」：任务编号走 `resolveTaskCond`（多个/免输 RW 前缀，IN 匹配）。
+ *
+ * 判定口径修正（2026-09-23）：det SQL **新增两列结论**（`s.EVALUATE_RESULT` / `d.EVALUATE_RESULT`，
+ * 追加在末尾、不移动既有列下标）；结果判定列原先只由 38 个兽药列的单项目判定推出，
+ * 现改为 `isFailText(s.EVALUATE_RESULT) || isFailText(d.EVALUATE_RESULT)` **优先**
+ * （谓词定义见 `provinceCommon.isFailText`，三模板共用），单项目判定保留作交叉验证。
+ * 实测合同 PS2026004（805 个样品，LIMS 结论不合格 **21** 个）：旧实现只认出 **7** 个
+ * （仅「涉事项目落进这 38 列」的那些），新实现 21 个（**修正 14 处**，差异仅判定列）。
  */
 import { buildContractCond, createStyledExcel, dmQuery, type CellValue } from '../helpers'
 import { danger, esc, ok, warn, type DmOutcome } from '../outcome'
 import { resolveTaskCond, taskFileStamp, taskListLabel } from './taskResolve'
-import { parseCityCounty } from './provinceCommon'
+import { isFailText, parseCityCounty } from './provinceCommon'
 import { ensureRules, factorOf, findGroupByTarget, getRule, resolveColumn, resolveName } from '../rules'
 import { resolveCell, type SubValue } from '../merge'
 
@@ -96,7 +103,8 @@ export async function queryProvinceRoutineLivestock(p: ProvinceLivestockParams):
     const detData = await dmQuery(
       'SELECT s.ID, s.SMALL_NO, s.NAME, s.SAMPLING_POSITION, ' +
         'd.NO, d.BUSINESS_CATEGORY_NAME, d.DETECTED_COMPANY_NAME, d.DETECTED_COMPANY_ADDRESS, ' +
-        'd.PRODUCTION_COMPANY_NAME, d.SAMPLING_DATE, d.ACCEPT_ORG_NAME, s.ORIGINAL_NO ' +
+        'd.PRODUCTION_COMPANY_NAME, d.SAMPLING_DATE, d.ACCEPT_ORG_NAME, s.ORIGINAL_NO, ' +
+        's.EVALUATE_RESULT, d.EVALUATE_RESULT ' +
         'FROM DETECTION.DT_DETECTION d ' +
         'LEFT JOIN DETECTION.DT_SAMPLE s ON s.DETECTION_NO = d.NO AND s.IS_DELETED = 0 ' +
         'WHERE d.IS_DELETED = 0' + whereCond + ' ' +
@@ -126,6 +134,10 @@ export async function queryProvinceRoutineLivestock(p: ProvinceLivestockParams):
       detectedCompany: string
       address: string
       origin: string
+      /** 单据级结论 d.EVALUATE_RESULT（散文），仅作兜底 */
+      evaluateResult: string
+      /** 样本级结论 s.EVALUATE_RESULT（规范枚举：符合 / 不合格 / 不符合 / 空），首选判定依据 */
+      sampleEvaluate: string
     }
 
     const sampleInfo: Record<string, LsSampleInfo> = {}
@@ -137,6 +149,9 @@ export async function queryProvinceRoutineLivestock(p: ProvinceLivestockParams):
         detectedCompany: String(s[6] || ''),
         address: String(s[7] || ''), // 受检单位所在地
         origin: String(s[8] || ''), // 生产单位 d.PRODUCTION_COMPANY_NAME（产地）
+        // 两列结论追加在 SQL 末尾，不移动既有列的下标
+        sampleEvaluate: String(s[12] || ''), // s.EVALUATE_RESULT
+        evaluateResult: String(s[13] || ''), // d.EVALUATE_RESULT
       }
     }
 
@@ -205,7 +220,17 @@ export async function queryProvinceRoutineLivestock(p: ProvinceLivestockParams):
 
       const rowIdx = rows.length
       const results = resultsBySample[sid] || {}
-      let hasFail = false
+      // 判定依据（任一命中即「不合格」）：与农产品块同一口径 ——
+      //   1) 样本级结论 s.EVALUATE_RESULT（规范枚举，首选）；
+      //   2) 单据级结论 d.EVALUATE_RESULT（散文兜底）；
+      //   3) 38 个兽药列的单项目判定（原有逻辑，保留作交叉验证）。
+      //
+      // ⚠️ 事故背景（2026-09-23）：旧逻辑只从这 38 个兽药列推判定，取数 SQL 连结论字段都没查。
+      //    实测合同 PS2026004（805 个样品）：LIMS 结论判不合格 21 个，落进这 38 列且单项目判定
+      //    填了「不合格」的只有 **7 个** —— 旧实现正是只认出这 7 个，另 14 个导出成「合格」
+      //    （漏判原因两类：单项目判定漏填、涉事项目不在本列清单内，
+      //      如「呋喃西林代谢物[SEM]」「孔雀石绿」这两个项目两块的列清单都没有）。
+      let hasFail = isFailText(info.sampleEvaluate) || isFailText(info.evaluateResult)
       for (const item of PROVINCE_ROUTINE_LIVESTOCK_DRUGS) {
         const res = results[item]
         if (!res) continue

@@ -448,3 +448,63 @@ export const cmaApi = {
       pending_cnt?: number
     }>(`/api/cma/ledger/batches/${encodeURIComponent(batchId)}/dispositions`, { items }),
 }
+
+/* ==================== LIMS 查询模板规则（达梦页 /dm 的口径配置） ==================== */
+
+/** 规则模板（`templateId` 为 `__global__` 时表示全局别名表） */
+export interface LimsRuleTemplate {
+  templateId: string
+  version: number
+  source: 'builtin' | 'custom'
+  updatedAt: string
+  updatedBy: string
+  note: string
+  payload: Record<string, unknown>
+}
+
+export interface LimsRuleVersion {
+  version: number
+  note: string
+  operator: string
+  createdAt: string
+  size: number
+  active: boolean
+}
+
+export const limsRulesApi = {
+  /** 全部模板的生效规则（达梦页取数前调用一次） */
+  list: () => get<{ success: boolean; error?: string; templates: LimsRuleTemplate[] }>('/api/lims-rules'),
+  one: (templateId: string) =>
+    get<{ success: boolean; error?: string } & LimsRuleTemplate>(`/api/lims-rules/${encodeURIComponent(templateId)}`),
+  /** 内置默认规则（「恢复默认」前先看差异） */
+  defaultPayload: (templateId: string) =>
+    get<{ success: boolean; error?: string; payload: Record<string, unknown> }>(
+      `/api/lims-rules/${encodeURIComponent(templateId)}/default`,
+    ),
+  versions: (templateId: string) =>
+    get<{ success: boolean; error?: string; versions: LimsRuleVersion[] }>(
+      `/api/lims-rules/${encodeURIComponent(templateId)}/versions`,
+    ),
+  versionDetail: (templateId: string, version: number) =>
+    get<{ success: boolean; error?: string; version: number; operator: string; createdAt: string; payload: Record<string, unknown> }>(
+      `/api/lims-rules/${encodeURIComponent(templateId)}/versions/${version}`,
+    ),
+  /** 保存为新版本并立即生效 */
+  save: (templateId: string, payload: Record<string, unknown>, note = '', operator = '') =>
+    post<{ success: boolean; error?: string; message?: string; version?: number }>(
+      `/api/lims-rules/${encodeURIComponent(templateId)}`,
+      { payload, note, operator },
+    ),
+  /** 回滚到指定历史版本（复制为新版本并生效，不删历史） */
+  activate: (templateId: string, version: number, operator = '') =>
+    post<{ success: boolean; error?: string; message?: string; version?: number }>(
+      `/api/lims-rules/${encodeURIComponent(templateId)}/activate`,
+      { version, operator },
+    ),
+  /** 恢复内置默认（同样记为新版本） */
+  reset: (templateId: string, operator = '') =>
+    post<{ success: boolean; error?: string; message?: string; version?: number }>(
+      `/api/lims-rules/${encodeURIComponent(templateId)}/reset`,
+      { version: 0, operator },
+    ),
+}

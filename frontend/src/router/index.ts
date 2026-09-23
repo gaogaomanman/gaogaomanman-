@@ -20,6 +20,8 @@ const router = createRouter({
     { path: '/personnel', name: 'personnel', component: () => import('../views/PersonnelView.vue') },
     { path: '/cma', name: 'cma', component: () => import('../views/CmaView.vue') },
     { path: '/progress', name: 'progress', component: () => import('../views/ProgressView.vue') },
+    // 查询模板规则设置（/dm 的别名与合并折算规则，后端存档 + 版本可回滚）
+    { path: '/limsrules', name: 'limsrules', component: () => import('../views/LimsRulesView.vue') },
   ],
 })
 

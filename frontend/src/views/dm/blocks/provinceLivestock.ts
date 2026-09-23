@@ -18,10 +18,12 @@
  * 列定义、加和规则、判定口径与文件名规则完全不变。
  * 新增「多任务编号输入」：任务编号走 `resolveTaskCond`（多个/免输 RW 前缀，IN 匹配）。
  */
-import { buildContractCond, createStyledExcel, dmQuery, PESTICIDE_NAME_MAP, type CellValue } from '../helpers'
+import { buildContractCond, createStyledExcel, dmQuery, type CellValue } from '../helpers'
 import { danger, esc, ok, warn, type DmOutcome } from '../outcome'
 import { resolveTaskCond, taskFileStamp, taskListLabel } from './taskResolve'
 import { parseCityCounty } from './provinceCommon'
+import { ensureRules, factorOf, findGroupByTarget, getRule, resolveColumn, resolveName } from '../rules'
+import { resolveCell, type SubValue } from '../merge'
 
 const PROVINCE_ROUTINE_LIVESTOCK_DRUGS = [
   '三聚氰胺（mg/kg)', '达氟沙星', '磺胺二甲氧嘧啶', '磺胺间甲氧嘧啶', '非诺特罗', '甲砜霉素', '沙丁胺醇', '特布他林', '克仑特罗', '倍他米松',
@@ -30,27 +32,12 @@ const PROVINCE_ROUTINE_LIVESTOCK_DRUGS = [
   '莱克多巴胺', 'β-内酰胺酶(单位：U/ml)', '恩诺沙星', '洛美沙星', '沙拉沙星', '碱类物质', '甲硝唑', '地美硝唑',
 ]
 
-/** 合并列映射：模板列名 -> 数据库多个实际检测项目名 */
-const PROVINCE_ROUTINE_LIVESTOCK_GROUPS: Record<string, string[]> = {
-  '氟苯尼考（氟苯尼考+氟苯尼考胺）': ['氟苯尼考', '氟苯尼考胺'],
-  'β-内酰胺酶(单位：U/ml)': ['β-内酰胺酶'],
-}
-
-/** 兽药名规范化映射：数据库项目名 -> 模板列名（含异名/带括号说明） */
-const PROVINCE_ROUTINE_LIVESTOCK_MAP: Record<string, string> = {
-  强力霉素: '多西环素',
-  磺胺间二甲氧嘧啶: '磺胺二甲氧嘧啶',
-  '磺胺二甲氧嘧啶（磺胺间二甲氧嘧啶、磺胺二甲氧哒嗪）': '磺胺二甲氧嘧啶',
-  '磺胺间甲氧嘧啶（磺胺-6-甲氧嘧啶）': '磺胺间甲氧嘧啶',
-  '磺胺甲基异噁唑（磺胺甲噁唑）': '磺胺甲噁唑',
-  克伦特罗: '克仑特罗',
-  '呋喃唑酮代谢物[AOZ]': '呋喃唑酮代谢物',
-  二甲硝咪唑: '地美硝唑',
-  '二甲硝咪唑（地美硝唑）': '地美硝唑',
-  '羟基二甲硝咪唑（羟基地美硝唑）': '羟基地美硝唑',
-  // 覆盖 PESTICIDE_NAME_MAP 中"碱类物质→碱性物质"的错误映射，保证模板列"碱类物质"能匹配
-  碱类物质: '碱类物质',
-}
+/**
+ * 「合并列映射 + 兽药名规范化映射」已改为**可配置规则**（`/api/lims-rules`，页面 `/limsrules`）。
+ * 内置默认值 = 改造前的 `PROVINCE_ROUTINE_LIVESTOCK_GROUPS` + `PROVINCE_ROUTINE_LIVESTOCK_MAP`。
+ * 注意：模板别名**优先于**全局别名——旧代码正是用它覆盖了「碱类物质→碱性物质」的错误映射。
+ */
+const TEMPLATE_ID = 'provinceLivestock'
 
 /** 监测环节归类：仅显示 养殖/屠宰/市场/运输车/奶站 五种 */
 function mapMonitorLink(val: unknown, sampleName: unknown): string {
@@ -73,12 +60,6 @@ function mapMonitorLink(val: unknown, sampleName: unknown): string {
     v.indexOf('合作社') >= 0 || v.indexOf('农户') >= 0 || v.indexOf('田块') >= 0 || v.indexOf('鱼塘') >= 0
   ) return '养殖环节'
   return v // 无法归类的保留原值
-}
-
-interface LsSubValue {
-  dn: string
-  v: string
-  judge: string
 }
 
 export interface ProvinceLivestockParams {
@@ -110,6 +91,8 @@ export async function queryProvinceRoutineLivestock(p: ProvinceLivestockParams):
   }
 
   try {
+    // 规则（别名 + 合并组）一次拉取，其后走缓存；后端不可用时退回内置默认
+    await ensureRules()
     const detData = await dmQuery(
       'SELECT s.ID, s.SMALL_NO, s.NAME, s.SAMPLING_POSITION, ' +
         'd.NO, d.BUSINESS_CATEGORY_NAME, d.DETECTED_COMPANY_NAME, d.DETECTED_COMPANY_ADDRESS, ' +
@@ -126,7 +109,8 @@ export async function queryProvinceRoutineLivestock(p: ProvinceLivestockParams):
 
     const projData = await dmQuery(
       'SELECT s.ID, sp.DECIDE_PROJECT_NAME, sp.METERING_UNIT_NAME, ' +
-        'r.REPORT_VAL, sp.SINGLE_JUDGE, sp.DETECTION_LIMIT_TYPE, sp.DETECTION_LIMIT_VALUE ' +
+        'r.REPORT_VAL, sp.SINGLE_JUDGE, sp.DETECTION_LIMIT_TYPE, sp.DETECTION_LIMIT_VALUE, ' +
+        'sp.ID AS SP_ID, sp.CREATE_DATETIME AS SP_CREATED ' +
         'FROM DETECTION.DT_DETECTION d ' +
         'LEFT JOIN DETECTION.DT_SAMPLE s ON s.DETECTION_NO = d.NO AND s.IS_DELETED = 0 ' +
         "LEFT JOIN DETECTION.DT_SAMPLE_PROJECT sp ON sp.SAMPLE_ID = s.ID AND sp.IS_DELETED = 0 AND NVL(sp.IS_LOGOUT, 'NO') <> 'YES' " +
@@ -157,45 +141,36 @@ export async function queryProvinceRoutineLivestock(p: ProvinceLivestockParams):
     }
 
     // 汇总每个样品的检测结果（含合并列加和）
-    const resultsBySample: Record<string, Record<string, { subValues: LsSubValue[] }>> = {}
+    // 本模板生效规则（后端版本优先，取不到则内置默认）
+    const rule = getRule(TEMPLATE_ID)
+    const groups = rule.groups
+    const resultsBySample: Record<string, Record<string, { subValues: SubValue[] }>> = {}
     if (projData.success && projData.rows) {
       for (const r of projData.rows) {
         const sid = String(r[0])
         const pn = r[1] as string
         if (!pn) continue
-        let dn = pn
-        // 优先用兽药名规范化映射（异名/带括号说明 → 模板列名）
-        if (PROVINCE_ROUTINE_LIVESTOCK_MAP[pn]) {
-          dn = PROVINCE_ROUTINE_LIVESTOCK_MAP[pn]
-        } else if (PESTICIDE_NAME_MAP[pn]) {
-          dn = PESTICIDE_NAME_MAP[pn]
-        }
+        // 兽药名归一化：模板别名优先，其次全局别名
+        const dn = resolveName(TEMPLATE_ID, pn)
         if (!resultsBySample[sid]) resultsBySample[sid] = {}
 
-        // 匹配规则：仅"标题包含项目名"才构成包含关系（不做反向包含匹配）
-        // 1) 单项目精确匹配（含去括号基础名）
-        let colName = PROVINCE_ROUTINE_LIVESTOCK_DRUGS.find((x) => {
-          const base = x.replace(/（.*）/g, '').replace(/\(.*\)/g, '')
-          return x === dn || base === dn
-        })
-        // 2) 列名包含项目名（标题含项目名）
-        if (!colName) {
-          colName = PROVINCE_ROUTINE_LIVESTOCK_DRUGS.find((x) => x.indexOf(dn) >= 0)
-        }
-        // 3) 合并组：子项目精确匹配
-        if (!colName) {
-          for (const [col, subs] of Object.entries(PROVINCE_ROUTINE_LIVESTOCK_GROUPS)) {
-            if (subs.includes(dn)) {
-              colName = col
-              break
-            }
-          }
-        }
-        if (!colName) continue
+        // 匹配规则（三级）：列名精确（含去括号基础名）→ 列名包含 → 合并组成员，见 rules.resolveColumn
+        const hit = resolveColumn(TEMPLATE_ID, dn, PROVINCE_ROUTINE_LIVESTOCK_DRUGS, groups)
+        if (!hit) continue
+        const colName = hit.column
 
         if (!resultsBySample[sid][colName]) resultsBySample[sid][colName] = { subValues: [] }
         const v = r[3] !== null && r[3] !== undefined && String(r[3]).trim() !== '' ? String(r[3]) : ''
-        resultsBySample[sid][colName].subValues.push({ dn, v, judge: String(r[4] || '') })
+        resultsBySample[sid][colName].subValues.push({
+          dn,
+          v,
+          judge: String(r[4] || ''),
+          limitType: String(r[5] || ''),
+          limitValue: r[6] !== null && r[6] !== undefined ? String(r[6]) : '',
+          factor: factorOf(hit.group, dn),
+          spId: r[7] !== null && r[7] !== undefined ? String(r[7]) : '',
+          createdAt: r[8] !== null && r[8] !== undefined ? String(r[8]) : '',
+        })
       }
     }
 
@@ -236,50 +211,30 @@ export async function queryProvinceRoutineLivestock(p: ProvinceLivestockParams):
         if (!res) continue
         const subs = res.subValues || []
         if (subs.length === 0) continue
-        const bySub: Record<string, LsSubValue[]> = {}
-        for (const x of subs) {
-          const k = x.dn || ''
-          ;(bySub[k] = bySub[k] || []).push(x)
-        }
-        const hasDup = Object.values(bySub).some((arr) => arr.length > 1)
-        if (hasDup) {
-          // 同一项目出现多条有效记录：分行全部列出并标红
-          const lines: string[] = []
-          for (const x of subs) {
-            if (x.v === '' || x.v === '未检出') continue
-            lines.push(String(x.v))
-            if (x.judge && (x.judge.includes('不合格') || x.judge === '不符合')) hasFail = true
-          }
-          row[item] = lines.length ? lines.join('\n') : '未检出'
+        const gp = findGroupByTarget(groups, item)
+        const combineMode = gp?.combine || rule.defaultCombine
+        const useSum = !!gp && combineMode === 'sum'
+        // 组内列（氟苯尼考）按系数加和并写数值；组外列走模板默认（取首个检出值，写原文）——与旧实现一致
+        const plan = resolveCell(subs, {
+          combine: combineMode,
+          // 判重一律按项目名（「整组判重」已于 2026-09-22 取消）
+          dupKey: 'dn',
+          dupPolicy: gp?.dupPolicy || 'keepLines',
+          failSource: gp ? 'groupSum' : 'firstDetected',
+          linesRequireValue: false,
+          // 求和列按数值口径（parseFloat）；"取首个检出值"的列按非空口径——旧实现正是如此
+          valueFilter: useSum ? 'numeric' : 'nonEmpty',
+        })
+        if (plan.mode === 'lines') {
+          // 同一项目出现多条有效记录：分行列出原始值并标红（无值时写「未检出」）
+          row[item] = plan.rawLines.length ? plan.rawLines.join('\n') : '未检出'
           redCells.add(rowIdx + '_' + colIdxMap[item])
-        } else if (item.indexOf('氟苯尼考') >= 0) {
-          // 氟苯尼考：氟苯尼考 + 氟苯尼考胺 加和
-          let sum = 0
-          let any = false
-          let fail = false
-          for (const x of subs) {
-            if (x.v === '' || x.v === '未检出') continue
-            const num = parseFloat(x.v)
-            if (!isNaN(num)) {
-              sum += num
-              any = true
-            }
-            if (x.judge && (x.judge.includes('不合格') || x.judge === '不符合')) fail = true
-          }
-          if (any) {
-            row[item] = sum
-          } else {
-            row[item] = '未检出'
-          }
-          if (fail) hasFail = true
+        } else if (plan.mode === 'single') {
+          row[item] = useSum ? (plan.single as number) : plan.singleRaw || '未检出'
         } else {
-          // 其它：填检出的值
-          const detected = subs.find((x) => x.v !== '')
-          row[item] = detected ? detected.v : '未检出'
-          if (detected && detected.judge && (detected.judge.includes('不合格') || detected.judge === '不符合')) {
-            hasFail = true
-          }
+          row[item] = '未检出'
         }
+        if (plan.anyFail) hasFail = true
       }
       row['结果判定(合格或不合格)'] = hasFail ? '不合格' : '合格'
       rows.push(row)

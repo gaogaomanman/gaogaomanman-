@@ -33,6 +33,8 @@ def _module_entries(dm_ok: bool, sql_ok: bool) -> list[dict]:
         {"key": "cma", "port": 3002, "name": "一单一库核对", "online": True, "standalone": True},
         # 抽采样进度统计：完成量取自达梦镜像快照，故其可用性与达梦数据源一致
         {"key": "progress", "port": 8080, "name": "抽采样进度统计", "online": dm_ok, "standalone": False},
+        # 查询模板规则：纯本地配置（SQLite），不依赖任何数据源，恒为可用
+        {"key": "limsrules", "port": 8080, "name": "查询模板规则", "online": True, "standalone": True},
     ]
 
 

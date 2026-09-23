@@ -18,10 +18,12 @@
  * 新增「按合同号导出」：传入 `contractNo` 时，筛选条件改用 `buildContractCond()`
  * （`d.CONTRACTS_NO LIKE`，支持逗号/分号分隔多值），其余取数、列定义、判定口径与文件名规则完全不变。
  */
-import { buildContractCond, createStyledExcel, dmQuery, PESTICIDE_NAME_MAP, type CellValue } from '../helpers'
+import { buildContractCond, createStyledExcel, dmQuery, type CellValue } from '../helpers'
 import { danger, esc, ok, warn, type DmOutcome } from '../outcome'
 import { mapAquaLoop, mapAquaPlace, parseAddressLevels } from '../helpers'
 import { resolveTaskCond, taskFileStamp, taskListLabel } from './taskResolve'
+import { ensureRules, factorOf, findGroupByTarget, getRule, resolveColumn, resolveName } from '../rules'
+import { resolveCell, type SubValue } from '../merge'
 
 const PROVINCE_ROUTINE_AQUATIC_DRUGS = [
   '氯霉素', '甲砜霉素', '氟苯尼考', '氟苯尼考胺', '呋喃唑酮代谢物', '呋喃西林代谢物', '呋喃妥因代谢物', '呋喃它酮代谢物', '孔雀石绿', '地西泮',
@@ -30,24 +32,11 @@ const PROVINCE_ROUTINE_AQUATIC_DRUGS = [
   '金霉素', '多西环素', '甲氧苄啶',
 ]
 
-/** 兽药名规范化映射（数据库项目名 -> 模板列名） */
-const PROVINCE_ROUTINE_AQUATIC_MAP: Record<string, string> = {
-  '磺胺间甲氧嘧啶（磺胺-6-甲氧嘧啶）': '磺胺间甲氧嘧啶',
-  '磺胺二甲氧嘧啶（磺胺间二甲氧嘧啶、磺胺二甲氧哒嗪）': '磺胺间二甲氧嘧啶',
-  '磺胺甲基异噁唑（磺胺甲噁唑）': '磺胺甲基异噁唑',
-  '呋喃唑酮代谢物[AOZ]': '呋喃唑酮代谢物',
-  '呋喃西林代谢物[SEM]': '呋喃西林代谢物',
-  '呋喃妥因代谢物[AHD]': '呋喃妥因代谢物',
-  '呋喃它酮代谢物[AMOZ]': '呋喃它酮代谢物',
-  强力霉素: '多西环素',
-  '磺胺多辛（磺胺邻二甲氧嘧啶）': '磺胺多辛',
-}
-
-interface AqSubValue {
-  dn: string
-  v: string
-  judge: string
-}
+/**
+ * 「兽药名规范化映射」已改为**可配置规则**（`/api/lims-rules`，页面 `/limsrules`）。
+ * 内置默认值 = 改造前的 `PROVINCE_ROUTINE_AQUATIC_MAP`；本模板没有合并列（各兽药为独立列）。
+ */
+const TEMPLATE_ID = 'provinceAquatic'
 
 export interface ProvinceAquaticParams {
   exactTaskNo?: string
@@ -78,6 +67,8 @@ export async function queryProvinceRoutineAquatic(p: ProvinceAquaticParams): Pro
   }
 
   try {
+    // 规则（别名）一次拉取，其后走缓存；后端不可用时退回内置默认
+    await ensureRules()
     const detData = await dmQuery(
       'SELECT s.ID, s.SMALL_NO, s.NAME, s.SAMPLING_POSITION, ' +
         'd.NO, d.BUSINESS_CATEGORY_NAME, d.DETECTED_COMPANY_NAME, d.DETECTED_COMPANY_ADDRESS, ' +
@@ -94,7 +85,8 @@ export async function queryProvinceRoutineAquatic(p: ProvinceAquaticParams): Pro
 
     const projData = await dmQuery(
       'SELECT s.ID, sp.DECIDE_PROJECT_NAME, sp.METERING_UNIT_NAME, ' +
-        'r.REPORT_VAL, sp.SINGLE_JUDGE, sp.DETECTION_LIMIT_TYPE, sp.DETECTION_LIMIT_VALUE ' +
+        'r.REPORT_VAL, sp.SINGLE_JUDGE, sp.DETECTION_LIMIT_TYPE, sp.DETECTION_LIMIT_VALUE, ' +
+        'sp.ID AS SP_ID, sp.CREATE_DATETIME AS SP_CREATED ' +
         'FROM DETECTION.DT_DETECTION d ' +
         'LEFT JOIN DETECTION.DT_SAMPLE s ON s.DETECTION_NO = d.NO AND s.IS_DELETED = 0 ' +
         "LEFT JOIN DETECTION.DT_SAMPLE_PROJECT sp ON sp.SAMPLE_ID = s.ID AND sp.IS_DELETED = 0 AND NVL(sp.IS_LOGOUT, 'NO') <> 'YES' " +
@@ -145,29 +137,36 @@ export async function queryProvinceRoutineAquatic(p: ProvinceAquaticParams): Pro
     }
 
     // 汇总检测结果（氟苯尼考与氟苯尼考胺单独计算）
-    const resultsBySample: Record<string, Record<string, { subValues: AqSubValue[] }>> = {}
+    // 本模板生效规则（后端版本优先，取不到则内置默认）
+    const rule = getRule(TEMPLATE_ID)
+    const groups = rule.groups
+    const resultsBySample: Record<string, Record<string, { subValues: SubValue[] }>> = {}
     if (projData.success && projData.rows) {
       for (const r of projData.rows) {
         const sid = String(r[0])
         const pn = r[1] as string
         if (!pn) continue
-        let dn = pn
-        if (PROVINCE_ROUTINE_AQUATIC_MAP[pn]) dn = PROVINCE_ROUTINE_AQUATIC_MAP[pn]
-        else if (PESTICIDE_NAME_MAP[pn]) dn = PESTICIDE_NAME_MAP[pn]
+        // 兽药名归一化：模板别名优先，其次全局别名
+        const dn = resolveName(TEMPLATE_ID, pn)
         if (!resultsBySample[sid]) resultsBySample[sid] = {}
 
-        // 匹配规则：仅"标题包含项目名"才构成包含关系（不做反向包含匹配）
-        // 1) 单项目精确匹配（含去括号基础名）  2) 列名包含项目名（该块无合并组步骤）
-        const colName =
-          PROVINCE_ROUTINE_AQUATIC_DRUGS.find((x) => {
-            const base = x.replace(/（.*）/g, '').replace(/\(.*\)/g, '')
-            return x === dn || base === dn
-          }) || PROVINCE_ROUTINE_AQUATIC_DRUGS.find((x) => x.indexOf(dn) >= 0)
-        if (!colName) continue
+        // 匹配规则（两级）：列名精确（含去括号基础名）→ 列名包含；本块没有合并组
+        const hit = resolveColumn(TEMPLATE_ID, dn, PROVINCE_ROUTINE_AQUATIC_DRUGS, groups)
+        if (!hit) continue
+        const colName = hit.column
 
         if (!resultsBySample[sid][colName]) resultsBySample[sid][colName] = { subValues: [] }
         const v = r[3] !== null && r[3] !== undefined && String(r[3]).trim() !== '' ? String(r[3]) : ''
-        resultsBySample[sid][colName].subValues.push({ dn, v, judge: String(r[4] || '') })
+        resultsBySample[sid][colName].subValues.push({
+          dn,
+          v,
+          judge: String(r[4] || ''),
+          limitType: String(r[5] || ''),
+          limitValue: r[6] !== null && r[6] !== undefined ? String(r[6]) : '',
+          factor: factorOf(hit.group, dn),
+          spId: r[7] !== null && r[7] !== undefined ? String(r[7]) : '',
+          createdAt: r[8] !== null && r[8] !== undefined ? String(r[8]) : '',
+        })
       }
     }
 
@@ -215,20 +214,24 @@ export async function queryProvinceRoutineAquatic(p: ProvinceAquaticParams): Pro
       for (const item of PROVINCE_ROUTINE_AQUATIC_DRUGS) {
         const res = results[item]
         if (!res || !res.subValues || res.subValues.length === 0) continue
-        const bySub: Record<string, AqSubValue[]> = {}
-        for (const x of res.subValues) {
-          const k = x.dn || ''
-          ;(bySub[k] = bySub[k] || []).push(x)
-        }
-        const hasDup = Object.values(bySub).some((arr) => arr.length > 1)
-        if (hasDup) {
-          // 同一项目出现多条有效记录：分行全部列出并标红
-          const lines = res.subValues.filter((x) => x.v !== '' && x.v !== '未检出').map((x) => String(x.v))
-          row[item] = lines.length ? lines.join('\n') : '未检出'
+        // 本块各兽药为独立列：取首个检出值；同一项目多条时分行列出并标红；
+        // 判定不参与（本块的「判定结果」取 d.EVALUATE_RESULT）
+        const plan = resolveCell(res.subValues, {
+          combine: rule.defaultCombine,
+          // 判重一律按项目名（「整组判重」已于 2026-09-22 取消）
+          dupKey: 'dn',
+          dupPolicy: 'keepLines',
+          failSource: 'none',
+          linesRequireValue: false,
+          valueFilter: 'nonEmpty',
+        })
+        if (plan.mode === 'lines') {
+          row[item] = plan.rawLines.length ? plan.rawLines.join('\n') : '未检出'
           redCells.add(rowIdx + '_' + colIdxMap[item])
+        } else if (plan.mode === 'single') {
+          row[item] = plan.singleRaw || '未检出'
         } else {
-          const detected = res.subValues.find((x) => x.v !== '')
-          row[item] = detected ? detected.v : '未检出'
+          row[item] = '未检出'
         }
       }
       rows.push(row)

@@ -83,6 +83,16 @@ function toast(msg: string, type = 'info'): void {
 }
 
 
+/* ==================== 「规则设置」入口 ==================== */
+/**
+ * 打开查询模板规则设置页：
+ * LIMS 导出模板的项目名别名映射、多项目合并折算系数、重复策略等都在那里维护
+ * （后端存档 + 版本可回滚，保存后下一次导出即生效）。
+ */
+function openRules(): void {
+  window.open('/limsrules', '_blank')
+}
+
 /* ==================== 卡片折叠（原 toggleBody） ==================== */
 const collapsedTpl1 = ref(false)
 const collapsedTpl2 = ref(false)
@@ -433,6 +443,12 @@ onMounted(() => {
           :title="sourceTitle"
           style="font-size:12px;color:var(--text2);background:#eef2ff;border-radius:20px;padding:4px 12px;white-space:nowrap;"
         >{{ sourceText }}</span>
+        <button
+          type="button"
+          class="rules-entry"
+          title="设置各模板的项目名别名与多项目合并折算系数（后端存档 · 版本可回滚，保存后下次导出即生效）"
+          @click="openRules"
+        >⚙️ 规则设置</button>
       </div>
     </header>
 
@@ -677,6 +693,14 @@ onMounted(() => {
   box-shadow: 0 1px 4px rgba(0,0,0,0.04); position: sticky; top: 0; z-index: 100;
 }
 .v-dm .header h1 { font-size: 20px; font-weight: 700; color: var(--primary); }
+/* 「规则设置」入口：与页头的「镜像/直连」胶囊同行，弱化但可点 */
+.v-dm .rules-entry {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 12px; padding: 5px 12px; border-radius: 20px; cursor: pointer;
+  border: 1px solid var(--primary); background: var(--card-bg); color: var(--primary);
+  white-space: nowrap; transition: background .15s, color .15s;
+}
+.v-dm .rules-entry:hover { background: var(--primary); color: #fff; }
 .v-dm .conn-status {
   display: inline-flex; align-items: center; gap: 6px;
   font-size: 13px; padding: 4px 14px; border-radius: 20px; font-weight: 500;

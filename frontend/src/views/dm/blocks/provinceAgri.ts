@@ -19,10 +19,12 @@
  * 列定义、合并折算、判定口径与文件名规则完全不变。
  * 新增「多任务编号输入」：任务编号走 `resolveTaskCond`（多个/免输 RW 前缀，IN 匹配）。
  */
-import { buildContractCond, createStyledExcel, dmQuery, PESTICIDE_NAME_MAP, type CellValue } from '../helpers'
+import { buildContractCond, createStyledExcel, dmQuery, type CellValue } from '../helpers'
 import { danger, esc, ok, warn, type DmOutcome } from '../outcome'
 import { resolveTaskCond, taskFileStamp, taskListLabel } from './taskResolve'
 import { formatSigNum, notDetectedText, parseCityCounty } from './provinceCommon'
+import { ensureRules, factorOf, findGroupByTarget, getRule, resolveColumn, resolveName } from '../rules'
+import { resolveCell, type SubValue } from '../merge'
 
 const PROVINCE_ROUTINE_AGRI_DRUGS = [
   '腐霉利', '异菌脲', '吡唑醚菌酯', '百菌清', '噻虫嗪', '苯醚甲环唑', '氯虫苯甲酰胺', '除虫脲', '噻虫胺', '霜霉威',
@@ -35,36 +37,12 @@ const PROVINCE_ROUTINE_AGRI_DRUGS = [
   '甲萘威', '茚虫威', '噻嗪酮', '氟氰戊菊酯', '啶氧菌酯',
 ]
 
-/** 合并列映射：模板列名 -> 数据库中的多个实际检测项目名 */
-const PROVINCE_ROUTINE_AGRI_GROUPS: Record<string, string[]> = {
-  '甲拌磷（包括甲拌磷砜和甲拌磷亚砜）': ['甲拌磷', '甲拌磷砜', '甲拌磷亚砜'],
-  '克百威（包括3-羟基克百威）': ['克百威', '3-羟基克百威'],
-  '涕灭威（包括涕灭威砜和涕灭威亚砜）': ['涕灭威', '涕灭威砜', '涕灭威亚砜'],
-  '氟虫腈（包括氟甲腈氟虫腈硫醚氟虫腈砜）': ['氟虫腈', '氟甲腈', '氟虫腈硫醚', '氟虫腈砜', '氟虫腈亚砜'],
-  乙基多杀菌素: ['乙基多杀菌素', '乙基多杀菌素J', '乙基多杀菌素L'],
-  多杀霉素: ['多杀霉素', '多杀霉素A', '多杀霉素D'],
-  三唑酮: ['三唑酮', '三唑醇'],
-}
-
-/** 合并列加权系数：子项目 -> 折算系数（主项目分子量/子项目分子量，=1 为直接加和） */
-const PROVINCE_ROUTINE_AGRI_FACTORS: Record<string, Record<string, number>> = {
-  '甲拌磷（包括甲拌磷砜和甲拌磷亚砜）': { 甲拌磷: 1, 甲拌磷砜: 260.38 / 292.38, 甲拌磷亚砜: 260.38 / 276.38 },
-  '克百威（包括3-羟基克百威）': { 克百威: 1, '3-羟基克百威': 221.25 / 237.25 },
-  '涕灭威（包括涕灭威砜和涕灭威亚砜）': { 涕灭威: 1, 涕灭威砜: 190.26 / 222.26, 涕灭威亚砜: 190.26 / 206.26 },
-  '氟虫腈（包括氟甲腈氟虫腈硫醚氟虫腈砜）': { 氟虫腈: 1, 氟虫腈砜: 437.15 / 453.15, 氟虫腈亚砜: 437.15 / 421.15, 氟甲腈: 437.15 / 389.08 },
-  乙基多杀菌素: { 乙基多杀菌素: 1, 乙基多杀菌素J: 1, 乙基多杀菌素L: 1 },
-  多杀霉素: { 多杀霉素: 1, 多杀霉素A: 1, 多杀霉素D: 1 },
-  三唑酮: { 三唑酮: 1, 三唑醇: 1 },
-}
-
-interface SubValue {
-  name: string
-  dn: string
-  v: string
-  judge: string
-  limitType: string
-  limitValue: string
-}
+/**
+ * 「合并列映射 + 折算系数」已改为**可配置规则**（后端 `/api/lims-rules`，页面 `/limsrules` 可调）。
+ * 内置默认值 = 改造前的 `PROVINCE_ROUTINE_AGRI_GROUPS` + `PROVINCE_ROUTINE_AGRI_FACTORS`，
+ * 因此未保存过规则时导出结果与旧版完全一致。
+ */
+const TEMPLATE_ID = 'provinceAgri'
 
 export interface ProvinceAgriParams {
   exactTaskNo?: string
@@ -95,6 +73,8 @@ export async function queryProvinceRoutineAgri(p: ProvinceAgriParams): Promise<D
   }
 
   try {
+    // 规则（别名 + 合并组）一次拉取，其后走缓存；后端不可用时退回内置默认（不中断导出）
+    await ensureRules()
     const detData = await dmQuery(
       'SELECT s.ID, s.SMALL_NO, s.NAME, s.SAMPLING_POSITION, ' +
         'd.NO, d.BUSINESS_CATEGORY_NAME, d.DETECTED_COMPANY_NAME, d.DETECTED_COMPANY_ADDRESS, ' +
@@ -111,7 +91,8 @@ export async function queryProvinceRoutineAgri(p: ProvinceAgriParams): Promise<D
 
     const projData = await dmQuery(
       'SELECT s.ID, sp.DECIDE_PROJECT_NAME, sp.METERING_UNIT_NAME, ' +
-        'r.REPORT_VAL, sp.SINGLE_JUDGE, sp.DETECTION_LIMIT_TYPE, sp.DETECTION_LIMIT_VALUE ' +
+        'r.REPORT_VAL, sp.SINGLE_JUDGE, sp.DETECTION_LIMIT_TYPE, sp.DETECTION_LIMIT_VALUE, ' +
+        'sp.ID AS SP_ID, sp.CREATE_DATETIME AS SP_CREATED ' +
         'FROM DETECTION.DT_DETECTION d ' +
         'LEFT JOIN DETECTION.DT_SAMPLE s ON s.DETECTION_NO = d.NO AND s.IS_DELETED = 0 ' +
         "LEFT JOIN DETECTION.DT_SAMPLE_PROJECT sp ON sp.SAMPLE_ID = s.ID AND sp.IS_DELETED = 0 AND NVL(sp.IS_LOGOUT, 'NO') <> 'YES' " +
@@ -144,50 +125,42 @@ export async function queryProvinceRoutineAgri(p: ProvinceAgriParams): Promise<D
       string,
       Record<string, { val: string; judge: string; limitType?: string; limitValue?: string; subValues: SubValue[] }>
     > = {}
+    // 本模板生效规则（后端版本优先，取不到则内置默认）
+    const rule = getRule(TEMPLATE_ID)
+    const groups = rule.groups
     if (projData.success && projData.rows) {
       for (const r of projData.rows) {
         const sid = String(r[0])
         const pn = r[1] as string
         if (!pn) continue
-        // 检测项目名归一化（映射括号说明等）
-        let dn = pn
-        if (PESTICIDE_NAME_MAP[pn]) dn = PESTICIDE_NAME_MAP[pn]
+        // 检测项目名归一化：全局别名 + 模板别名（模板优先）
+        const dn = resolveName(TEMPLATE_ID, pn)
         if (!resultsBySample[sid]) resultsBySample[sid] = {}
 
         // 匹配规则：仅"标题包含项目名"才构成包含关系（不做反向包含匹配）
-        // 1) 单项目精确匹配
-        let colName = PROVINCE_ROUTINE_AGRI_DRUGS.find((x) => x === dn)
-        // 2) 列名包含项目名（标题含项目名，如"甲拌磷（包括...）"包含"甲拌磷"）
-        if (!colName) {
-          colName = PROVINCE_ROUTINE_AGRI_DRUGS.find((x) => x.indexOf(dn) >= 0)
-        }
-        // 3) 合并组：子项目精确匹配
-        if (!colName) {
-          for (const [col, subs] of Object.entries(PROVINCE_ROUTINE_AGRI_GROUPS)) {
-            if (subs.includes(dn)) {
-              colName = col
-              break
-            }
-          }
-        }
-        if (!colName) continue
+        // 匹配规则（三级）：列名精确 → 列名包含项目名 → 合并组成员，见 rules.resolveColumn
+        const hit = resolveColumn(TEMPLATE_ID, dn, PROVINCE_ROUTINE_AGRI_DRUGS, groups)
+        if (!hit) continue
+        const colName = hit.column
+        // 2)、3) 两级匹配已并入 rules.resolveColumn
 
-        // 收集该列对应本样品的所有子项目检出值（填检出的值：优先取有数值的）
+        // 收集该列对应本样品的所有子项目检出值
         if (!resultsBySample[sid][colName]) {
           resultsBySample[sid][colName] = { val: '', judge: '', subValues: [] }
         }
         const v = r[3] !== null && r[3] !== undefined && String(r[3]).trim() !== '' ? String(r[3]) : ''
-        // pn 是原始数据库项目名（用于加权系数匹配），dn 是规范化后的模板子项目名
-        // r[5]=检出限类型，r[6]=检出限值
+        // r[5]=检出限类型，r[6]=检出限值，r[7]=SP 主键，r[8]=SP 创建时间（latest 策略用）
         const limitType = String(r[5] || '')
         const limitValue = r[6] !== null && r[6] !== undefined ? String(r[6]) : ''
         resultsBySample[sid][colName].subValues.push({
-          name: pn,
           dn,
           v,
           judge: String(r[4] || ''),
           limitType,
           limitValue,
+          factor: factorOf(hit.group, dn),
+          spId: r[7] !== null && r[7] !== undefined ? String(r[7]) : '',
+          createdAt: r[8] !== null && r[8] !== undefined ? String(r[8]) : '',
         })
       }
     }
@@ -227,49 +200,29 @@ export async function queryProvinceRoutineAgri(p: ProvinceAgriParams): Promise<D
         const res = results[item]
         if (!res) continue
         const subs = res.subValues || []
-        const factors = PROVINCE_ROUTINE_AGRI_FACTORS[item] || {}
-        const bySub: Record<string, SubValue[]> = {}
-        for (const x of subs) {
-          ;(bySub[x.dn] = bySub[x.dn] || []).push(x)
-        }
-        const hasDup = Object.values(bySub).some((arr) => arr.length > 1)
         if (subs.length > 0) {
-          // 合并组：各子项目加权求和（按 PROVINCE_ROUTINE_AGRI_FACTORS 折算系数）
-          let sum = 0
-          let anyVal = false
-          let anyFail = false
-          let firstLimitType = ''
-          let firstLimitValue = ''
-          for (const x of subs) {
-            if (!firstLimitType && x.limitType) firstLimitType = x.limitType
-            if (!firstLimitValue && x.limitValue) firstLimitValue = x.limitValue
-            if (x.v === '' || x.v === '未检出') continue
-            const num = parseFloat(x.v)
-            if (isNaN(num)) continue
-            const factor = x.dn !== undefined && factors[x.dn] !== undefined ? factors[x.dn] : 1
-            sum += num * factor
-            anyVal = true
-            if (x.judge && (x.judge.includes('不合格') || x.judge === '不符合')) anyFail = true
-          }
-          if (hasDup && anyVal) {
+          // 合并方式 / 判重方式 / 重复策略取自规则；独立列走模板默认（= 按系数 1 加权求和）
+          const gp = findGroupByTarget(groups, item)
+          const plan = resolveCell(subs, {
+            combine: gp?.combine || rule.defaultCombine,
+            // 判重一律按项目名（「整组判重」已于 2026-09-22 取消）
+            dupKey: 'dn',
+            dupPolicy: gp?.dupPolicy || 'keepLines',
+            failSource: 'valued',
+            linesRequireValue: true,
+            // 农产品块一律按数值口径取值（旧实现统一 parseFloat，非数值即视为无值）
+            valueFilter: 'numeric',
+          })
+          if (plan.mode === 'lines') {
             // 同一项目出现多条有效记录：分行全部列出并标红
-            const lines: string[] = []
-            for (const x of subs) {
-              if (x.v === '' || x.v === '未检出') continue
-              const num = parseFloat(x.v)
-              if (isNaN(num)) continue
-              const factor = x.dn !== undefined && factors[x.dn] !== undefined ? factors[x.dn] : 1
-              lines.push(formatSigNum(num * factor))
-            }
-            row[item] = lines.join('\n')
+            row[item] = plan.numericLines.map((n) => formatSigNum(n)).join('\n')
             redCells.add(rowIdx + '_' + colIdxMap[item])
-            if (anyFail) hasFail = true
-          } else if (anyVal) {
-            row[item] = formatSigNum(sum) // <1 保留 2 位有效数字，>=1 保留 3 位
-            if (anyFail) hasFail = true
+          } else if (plan.mode === 'single') {
+            row[item] = plan.single === null ? plan.singleRaw : formatSigNum(plan.single)
           } else {
-            row[item] = notDetectedText(firstLimitType, firstLimitValue)
+            row[item] = notDetectedText(plan.limitType, plan.limitValue)
           }
+          if (plan.anyFail) hasFail = true
         } else {
           // 单项目（原实现中 subValues 恒有值，此分支为兜底，按原样保留）
           if (res.val !== '' && res.val !== null && res.val !== undefined) {

@@ -21,27 +21,26 @@
 import { createStyledExcel, dmQuery, NEW_KIND_MAP, buildContractCond, reorderPesticides, type CellValue } from '../helpers'
 import { danger, esc, ok, warn, type DmOutcome } from '../outcome'
 import { formatSigNum, notDetectedText, parseCityCounty } from './provinceCommon'
+import { ensureRules, factorOf, findGroupByMember, findGroupByTarget, getRule, resolveName } from '../rules'
+import { resolveCell, type SubValue } from '../merge'
 
-/** 合并统计组：标准列名 -> { 子项目: 折算系数(=1为直接加和) }（块内第三份，未与农产品块合并） */
-const YEARLY_GROUPS: Record<string, Record<string, number>> = {
-  '甲拌磷（包括甲拌磷砜和甲拌磷亚砜）': { 甲拌磷: 1, 甲拌磷砜: 260.38 / 292.38, 甲拌磷亚砜: 260.38 / 276.38 },
-  '克百威（包括3-羟基克百威）': { 克百威: 1, '3-羟基克百威': 221.25 / 237.25 },
-  '涕灭威（包括涕灭威砜和涕灭威亚砜）': { 涕灭威: 1, 涕灭威砜: 190.26 / 222.26, 涕灭威亚砜: 190.26 / 206.26 },
-  '氟虫腈（包括氟甲腈氟虫腈硫醚氟虫腈砜）': { 氟虫腈: 1, 氟虫腈砜: 437.15 / 453.15, 氟虫腈亚砜: 437.15 / 421.15, 氟甲腈: 437.15 / 389.08 },
-  乙基多杀菌素: { 乙基多杀菌素: 1, 乙基多杀菌素J: 1, 乙基多杀菌素L: 1 },
-  多杀霉素: { 多杀霉素: 1, 多杀霉素A: 1, 多杀霉素D: 1 },
-  三唑酮: { 三唑酮: 1, 三唑醇: 1 },
-  '氟苯尼考（氟苯尼考+氟苯尼考胺）': { 氟苯尼考: 1, 氟苯尼考胺: 1 },
-  'β-内酰胺酶': { 'β-内酰胺酶': 1 },
-}
+/**
+ * 合并统计组已改为**可配置规则**（`/api/lims-rules`，页面 `/limsrules`）。
+ * 内置默认值 = 改造前的 `YEARLY_GROUPS`（= 农产品 7 组 + 畜产品「氟苯尼考」「β-内酰胺酶」）。
+ * ⚠️ 本模板默认的判重方式是「整组」——复刻旧版疑似缺陷（旧代码分组键恒为 'undefined'），
+ *    因此组内多条记录时走"分行列出 + 标红"；如需改成与农产品一致（按项目名判重、加权求和），
+ *    在规则页把该组的「判重方式」改成"按项目名"即可。
+ */
+const TEMPLATE_ID = 'yearlyStats'
 
 /** 项目名归一化：合并异名 / 去括号注释（块内独立实现，未与其它页/块合并） */
 function normalizeYearlyItem(name: unknown): string {
   let s = String(name || '').trim()
   if (!s) return ''
   s = s.replace(/^[﹡△*☆★]+/, '').trim()
-  const aliasMap: Record<string, string> = { 克伦特罗: '克仑特罗', 盐酸克伦特罗: '克仑特罗' }
-  if (aliasMap[s]) return aliasMap[s]
+  // 别名来自规则层；本模板不继承全局别名表（与旧实现一致，见 rules.TEMPLATE_MATCH）
+  const alias = resolveName(TEMPLATE_ID, s)
+  if (alias !== s) return alias
   const m = s.match(/^([\u4e00-\u9fa5A-Za-z0-9，、·β]+?)\s*[（(\[][^（(\[）)\]]*[）)\]]\s*$/)
   if (m && m[1].length >= 2) {
     const inner = m[0].match(/[（(\[][^（(\[）)\]]*[）)\]]/)![0]
@@ -51,23 +50,8 @@ function normalizeYearlyItem(name: unknown): string {
   return s
 }
 
-/** 匹配合并组：返回标准列名；非合并组返回 null */
-function findYearlyGroupCol(dn: string): string | null {
-  if (YEARLY_GROUPS[dn]) return dn
-  for (const col of Object.keys(YEARLY_GROUPS)) {
-    if (YEARLY_GROUPS[col][dn] !== undefined) return col
-  }
-  return null
-}
-
-interface GroupSubValue {
-  subName: string
-  factor: number
-  v: string
-  judge: string
-  limitType: string
-  limitValue: string
-}
+/** 合并组子项 = 规则层统一类型（原块内的 `GroupSubValue`，字段由 subName 改为 dn） */
+type GroupSubValue = SubValue
 
 type YearlyCell =
   | { group: true; subValues: GroupSubValue[] }
@@ -90,6 +74,8 @@ export async function queryNewTemplate(p: YearlyStatsParams): Promise<DmOutcome>
   p.setProgress('⏳ 正在查询样品数据...')
 
   try {
+    // 规则（别名 + 合并组）一次拉取，其后走缓存；后端不可用时退回内置默认
+    await ensureRules()
     // 产品类别展开为 SAMPLE_CATEGORY_NAME 列表
     const catValues: string[] = []
     for (const k of p.kinds) {
@@ -121,7 +107,8 @@ export async function queryNewTemplate(p: YearlyStatsParams): Promise<DmOutcome>
     // 2. 检测项目
     const projData = await dmQuery(
       'SELECT s.ID, sp.DECIDE_PROJECT_NAME, sp.METERING_UNIT_NAME, ' +
-        'r.REPORT_VAL, sp.SINGLE_JUDGE, sp.DETECTION_LIMIT_TYPE, sp.DETECTION_LIMIT_VALUE ' +
+        'r.REPORT_VAL, sp.SINGLE_JUDGE, sp.DETECTION_LIMIT_TYPE, sp.DETECTION_LIMIT_VALUE, ' +
+        'sp.ID AS SP_ID, sp.CREATE_DATETIME AS SP_CREATED ' +
         'FROM DETECTION.DT_DETECTION d ' +
         'LEFT JOIN DETECTION.DT_SAMPLE s ON s.DETECTION_NO = d.NO AND s.IS_DELETED = 0 ' +
         "LEFT JOIN DETECTION.DT_SAMPLE_PROJECT sp ON sp.SAMPLE_ID = s.ID AND sp.IS_DELETED = 0 AND NVL(sp.IS_LOGOUT, 'NO') <> 'YES' " +
@@ -158,6 +145,9 @@ export async function queryNewTemplate(p: YearlyStatsParams): Promise<DmOutcome>
       }
     }
 
+    // 本模板生效规则（后端版本优先，取不到则内置默认）
+    const rule = getRule(TEMPLATE_ID)
+    const groups = rule.groups
     // 检测项目（含合并统计与加和计算）
     const pesticideSet = new Set<string>()
     const pesticideUnit: Record<string, string> = {}
@@ -175,10 +165,10 @@ export async function queryNewTemplate(p: YearlyStatsParams): Promise<DmOutcome>
         const limitType = String(r[5] || '')
         const limitValue = r[6] !== null && r[6] !== undefined ? String(r[6]) : ''
 
-        // 合并组匹配：子项目归并到标准列，加权求和
-        const groupCol = findYearlyGroupCol(dn)
-        if (groupCol) {
-          const factor = YEARLY_GROUPS[groupCol][dn] !== undefined ? YEARLY_GROUPS[groupCol][dn] : 1
+        // 合并组匹配：子项目归并到标准列，按规则系数折算
+        const gp = findGroupByMember(groups, dn)
+        if (gp) {
+          const groupCol = gp.target
           pesticideSet.add(groupCol)
           pesticideUnit[groupCol] = pesticideUnit[groupCol] || String(r[2] || '')
           if (!resultsBySample[sampleId]) resultsBySample[sampleId] = {}
@@ -186,7 +176,16 @@ export async function queryNewTemplate(p: YearlyStatsParams): Promise<DmOutcome>
             resultsBySample[sampleId][groupCol] = { group: true, subValues: [] }
           }
           const cell = resultsBySample[sampleId][groupCol] as { group: true; subValues: GroupSubValue[] }
-          cell.subValues.push({ subName: dn, factor, v, judge, limitType, limitValue })
+          cell.subValues.push({
+            dn,
+            v,
+            judge,
+            limitType,
+            limitValue,
+            factor: factorOf(gp, dn),
+            spId: r[7] !== null && r[7] !== undefined ? String(r[7]) : '',
+            createdAt: r[8] !== null && r[8] !== undefined ? String(r[8]) : '',
+          })
         } else {
           // 独立列
           pesticideSet.add(dn)
@@ -247,49 +246,30 @@ export async function queryNewTemplate(p: YearlyStatsParams): Promise<DmOutcome>
         if (!res) continue
         const colKey = pi + (pesticideUnit[pi] || '')
         if (res.group) {
-          // 合并组：各子项目加权求和；若同一子项目出现多条有效记录，则分行全部列出并标红
+          // 合并组：合并方式 / 判重方式 / 重复策略取自规则
+          // （默认 dupKey='group' 复刻旧版"整组判重"行为，与农产品块的口径差异见文件头说明）
           const subs = res.subValues || []
-          // ⚠️ 原实现此处为 bySub[x.dn]，而合并组子项对象只有 subName、没有 dn，
-          //    因此分组键恒为 'undefined' —— 等价于"该组只要有 >1 条子项记录就判定为重复"。
-          //    为保持与旧版一致的导出结果，此处按原样复现（未修正为 subName）。
-          const bySub: Record<string, GroupSubValue[]> = {}
-          for (const x of subs) {
-            const key = String((x as { dn?: string }).dn)
-            ;(bySub[key] = bySub[key] || []).push(x)
-          }
-          const hasDup = Object.values(bySub).some((arr) => arr.length > 1)
-          let sum = 0
-          let anyVal = false
-          let anyFail = false
-          let firstLimitType = ''
-          let firstLimitValue = ''
-          for (const x of subs) {
-            if (!firstLimitType && x.limitType) firstLimitType = x.limitType
-            if (!firstLimitValue && x.limitValue) firstLimitValue = x.limitValue
-            if (x.v === '' || x.v === '未检出') continue
-            const num = parseFloat(x.v)
-            if (isNaN(num)) continue
-            sum += num * x.factor
-            anyVal = true
-            if (x.judge && (x.judge.includes('不合格') || x.judge === '不符合')) anyFail = true
-          }
-          if (hasDup && anyVal) {
-            const lines: string[] = []
-            for (const x of subs) {
-              if (x.v === '' || x.v === '未检出') continue
-              const num = parseFloat(x.v)
-              if (isNaN(num)) continue
-              lines.push(formatSigNum(num * x.factor))
-            }
-            row[colKey] = lines.join('\n')
+          const gp = findGroupByTarget(groups, pi)
+          const plan = resolveCell(subs, {
+            combine: gp?.combine || rule.defaultCombine,
+            // 【2026-09-22 口径变更】判重按项目名（原先为复刻旧缺陷用「整组判重」，
+            // 导致组内多条只分行标红、不做合并求和；现已取消，与农产品块一致）
+            dupKey: 'dn',
+            dupPolicy: gp?.dupPolicy || 'keepLines',
+            failSource: 'valued',
+            linesRequireValue: true,
+            // 年度块合并组一律按数值口径（旧实现统一 parseFloat）
+            valueFilter: 'numeric',
+          })
+          if (plan.mode === 'lines') {
+            row[colKey] = plan.numericLines.map((n) => formatSigNum(n)).join('\n')
             redCells.add(rowIdx + '_' + colIdxMap[colKey])
-            if (anyFail) hasFail = true
-          } else if (anyVal) {
-            row[colKey] = formatSigNum(sum)
-            if (anyFail) hasFail = true
+          } else if (plan.mode === 'single') {
+            row[colKey] = plan.single === null ? plan.singleRaw : formatSigNum(plan.single)
           } else {
-            row[colKey] = notDetectedText(firstLimitType, firstLimitValue)
+            row[colKey] = notDetectedText(plan.limitType, plan.limitValue)
           }
+          if (plan.anyFail) hasFail = true
         } else {
           // 独立列：多条有效记录则分行全部列出并标红
           const vals = res.vals || []

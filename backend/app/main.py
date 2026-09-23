@@ -29,6 +29,7 @@ from app.core.config import FRONTEND_DIST, settings
 from app.modules.board.routes import router as board_router
 from app.modules.cma.routes import router as cma_router
 from app.modules.dm.routes import router as dm_router
+from app.modules.limsrules.routes import router as limsrules_router
 from app.modules.mirror.routes import router as mirror_router
 from app.modules.nav.routes import router as nav_router
 from app.modules.personnel.routes import router as personnel_router
@@ -135,7 +136,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-for _router in (nav_router, dm_router, sqlserver_router, board_router, personnel_router, cma_router, progress_router, mirror_router):
+for _router in (nav_router, dm_router, sqlserver_router, board_router, personnel_router, cma_router, progress_router, mirror_router, limsrules_router):
     app.include_router(_router)
 
 
@@ -159,6 +160,7 @@ async def app_info() -> dict:
             "personnel": "/personnel",
             "cma": "/cma",
             "progress": "/progress",
+            "limsrules": "/limsrules",
         },
     }
 

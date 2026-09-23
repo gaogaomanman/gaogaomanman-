@@ -24,19 +24,22 @@ def state() -> dict:
     return dict(_state)
 
 
-def sync_now(mode: str = "snapshot", sources: list[str] | None = None) -> dict:
+def sync_now(mode: str = "snapshot", sources: list[str] | None = None,
+             trigger: str = "manual") -> dict:
     """执行一次同步（阻塞）。
 
     mode="inplace"：WAL 原地更新 current（约 1 分钟，手动按钮用）；
     mode="snapshot"：快照式（约 5 分钟，每晚 19:00 定时任务用，保留历史存档）。
     sources=None 时取配置 `mirror_sync_sources`（默认仅达梦）。
+    trigger：schedule / manual / startup，仅用于留痕，便于事后区分"是谁触发的"。
     已在同步中则直接返回不重复执行。
     """
     if not _lock.acquire(blocking=False):
         return {"started": False, "reason": "已有同步在进行中"}
+    started = datetime.now()
     _state.update(
         syncing=True,
-        started_at=datetime.now().isoformat(timespec="seconds"),
+        started_at=started.isoformat(timespec="seconds"),
         last_error=None,
     )
     try:
@@ -48,11 +51,40 @@ def sync_now(mode: str = "snapshot", sources: list[str] | None = None) -> dict:
             res = sync.run_full_sync(sources=sources)
         _state["last"] = res
         _state["finished_at"] = datetime.now().isoformat(timespec="seconds")
+        _record(trigger, mode, sources, res)
         return {"started": True, "result": res}
     except Exception as exc:  # noqa: BLE001
-        _state["last_error"] = str(exc)[:500]
+        msg = str(exc)[:500]
+        _state["last_error"] = msg
         _state["finished_at"] = datetime.now().isoformat(timespec="seconds")
+        _record(trigger, mode, sources, None, error=msg)
         return {"started": True, "error": str(exc)[:300]}
     finally:
         _state["syncing"] = False
         _lock.release()
+
+
+def _record(trigger: str, mode: str, sources: list[str] | None, res: dict | None,
+            error: str | None = None) -> None:
+    """把本次同步结果落盘（`sync_history.log`）。
+
+    原先失败原因只留在内存 `last_error` 里，服务一重启就"查无此错"——
+    2026-09-21/22 两晚的定时同步失败正是因此只能靠磁盘残留反推。
+    现在历史可查，失败是"哪一晚、什么原因、占用进程是谁"一目了然。
+    """
+    from app.mirror import store
+
+    data = res or {}
+    failed = [t.get("table") for t in data.get("tables", []) if t.get("status") != "ok"]
+    store.append_history({
+        "at": datetime.now().isoformat(timespec="seconds"),
+        "trigger": trigger,
+        "mode": mode,
+        "ok": error is None and bool(data.get("ok")),
+        "promoted": data.get("promoted"),
+        "snapshot": data.get("snapshot"),
+        "elapsed_sec": data.get("elapsed_sec"),
+        "size_mb": data.get("size_mb"),
+        "tables_failed": failed or None,
+        "error": error,
+    })

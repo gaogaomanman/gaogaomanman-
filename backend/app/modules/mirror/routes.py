@@ -29,6 +29,8 @@ async def status() -> dict:
         "exists": store.CURRENT_DB.exists(),
         "snapshots": snapshots,
         "sync": runner.state(),
+        # 同步历史（落盘，重启不丢）：失败原因、是否切换成功、占用进程等
+        "history": store.read_history(20),
     }
 
 

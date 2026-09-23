@@ -41,10 +41,32 @@ from app.mirror import store as mirror_store
 from app.query import is_mirror_mode
 
 
+async def _release_watcher() -> None:
+    """后台守护：响应其他实例的「让出 current.sqlite 句柄」请求。
+
+    多实例共存的必需一环——生产实例做快照原子切换前会写 `release.request`，
+    本任务看到新请求就 `dispose_engines()` 释放句柄并回 ack，
+    否则对方的 `os.replace` 会一直以 WinError 32 失败（历史事故见 store.promote 注释）。
+
+    **不受 `SCHEDULER_ENABLED` 控制**：任何实例都可能占着镜像库，
+    长期开着的调试实例尤其必须参与，它正是 2026-09-21/22 两晚的占用方。
+    1.5 秒轮询、每次只读一个几十字节的文件，开销可忽略。
+    """
+    while True:
+        try:
+            await asyncio.to_thread(mirror_store.release_readers)
+        except Exception:  # noqa: BLE001  守护任务不允许抛错
+            pass
+        await asyncio.sleep(1.5)
+
+
 @contextlib.asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     # 启动即校验关键配置（fail fast）
     settings.validate_required()
+
+    # 让出句柄守护：先于调度开关启动，调试实例也要跑（见函数注释）
+    release_task = asyncio.create_task(_release_watcher())
 
     sync_task: asyncio.Task | None = None
 
@@ -52,13 +74,16 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     # 避免与生产实例重复搬数、重复重算。
     if not settings.scheduler_enabled:
         print("[scheduler] SCHEDULER_ENABLED=false：本实例不启动任何定时任务（开发模式）")
-        yield
-        db.dm_close_all()
+        try:
+            yield
+        finally:
+            release_task.cancel()
+            db.dm_close_all()
         return
 
     if is_mirror_mode() and not mirror_store.CURRENT_DB.exists():
         # 镜像模式下若无快照，应用无法取数——启动即触发一次同步（后台执行）
-        asyncio.create_task(asyncio.to_thread(runner.sync_now))
+        asyncio.create_task(asyncio.to_thread(runner.sync_now, trigger="startup"))
 
     at = (settings.mirror_sync_at or "").strip()
     if at:
@@ -79,7 +104,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
                         target += timedelta(days=1)
                     await asyncio.sleep((target - now).total_seconds())
                     try:
-                        await asyncio.to_thread(runner.sync_now)
+                        await asyncio.to_thread(runner.sync_now, trigger="schedule")
                     except Exception:  # noqa: BLE001  失败不影响服务，状态见 /api/mirror/status
                         pass
 
@@ -117,6 +142,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         sync_task.cancel()
     if progress_task is not None:
         progress_task.cancel()
+    release_task.cancel()
     db.dm_close_all()
 
 

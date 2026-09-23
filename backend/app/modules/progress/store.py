@@ -1290,9 +1290,13 @@ def upsert_contract(contract_no: str, name: str | None = None, note: str = "",
                 "  alias_of = excluded.alias_of, "
                 "  task_type_id = excluded.task_type_id, "
                 "  updated_at = excluded.updated_at",
+                # ⚠️ 这里必须绑 `target`（归一化后的归并目标），不能绑原始入参 `alias_of`：
+                #   1) `alias_of` 默认是 None，直接绑会撞 NOT NULL（新建/只改备注都崩）；
+                #   2) `alias_of` 未归一化（' C1 ' 原样入库），且"不能归并到自己"的防护失效。
+                #   两个缺陷同一个根因：算好的 `target` 被丢掉没用，详见 tests 中的合同用例。
                 (no, nm, clean_field(note, MAX_NOTE),
                  SOURCE_MANUAL if source != SOURCE_AUTO else SOURCE_AUTO,
-                 1 if enabled else 0, 1 if nm else 0, _now(), alias_of, tt),
+                 1 if enabled else 0, 1 if nm else 0, _now(), target, tt),
             )
     finally:
         conn.close()

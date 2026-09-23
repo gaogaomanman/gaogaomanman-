@@ -146,6 +146,21 @@ def _copy_table(
     return total
 
 
+def want_sources_of(sources: list[str] | str | None) -> list[str]:
+    """把 `sources` 归一成来源列表（"dm" / "sqlserver" 的子集）。
+
+    兼容三种传法：None（取配置）、"dm,sqlserver"（配置里的字符串）、["dm"]（API 传的列表）。
+
+    ⚠️ 历史缺陷：`/api/mirror/sync` 会把 sources 转成列表，而这里原先直接调
+    `.split(",")`，于是**显式指定 sources 的手动同步必然抛
+    `'list' object has no attribute 'split'`**（2026-09-23 复现并修正）。
+    页面按钮平时不传 sources（走配置默认），所以这个缺陷一直没暴露。
+    """
+    raw: list[str] | str = sources if sources else settings.mirror_sync_sources
+    parts = raw.split(",") if isinstance(raw, str) else list(raw)
+    return [str(p).strip().lower() for p in parts if str(p).strip()]
+
+
 def run_full_sync(
     on_progress: ProgressFn | None = None,
     only: list[str] | None = None,
@@ -164,13 +179,16 @@ def run_full_sync(
     promote: 成功后是否原子切换 current.sqlite
     """
     store.ensure_dirs()
+    # 清掉上次异常遗留的 current.sqlite.tmp（正常路径 promote 会自己收尾）。
+    # 曾遗留 2.3GB，白占 F: 且让排查误判为"这次也复制成功但没切换"。
+    store.cleanup_stale_tmp()
     started = datetime.now()
     snapshot = store.snapshot_path(started)
     if snapshot.exists():
         snapshot.unlink()
     tgt_engine = store.engine_for(snapshot, fast=True)
 
-    want_sources = [s.strip().lower() for s in (sources or settings.mirror_sync_sources).split(",") if s.strip()]
+    want_sources = want_sources_of(sources)
     skipped = [s for s in ("dm", "sqlserver") if s not in want_sources]
 
     # 以旧快照为底：被跳过的来源原样保留（不连源库、不重搬）
@@ -336,8 +354,7 @@ def run_inplace_sync(
     if not store.CURRENT_DB.exists():
         raise RuntimeError("镜像快照不存在（尚未同步），无法原地更新")
     started = datetime.now()
-    want_sources = [s.strip().lower() for s in (sources or settings.mirror_sync_sources).split(",") if s.strip()]
-    want_sources = [s for s in ("dm", "sqlserver") if s in want_sources]
+    want_sources = [s for s in ("dm", "sqlserver") if s in want_sources_of(sources)]
 
     summary: dict = {
         "mode": "inplace",
